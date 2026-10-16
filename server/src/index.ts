@@ -1,0 +1,94 @@
+import express from 'express'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { getState, setState, type AppState } from './db.js'
+import { clearSessionCookie, getSessionFromRequest, getSessionToken, login, logout, requireAdmin, requireAuth, setSessionCookie } from './auth.js'
+import { proxySymphonyAuth, proxySymphonyDnd } from './symphonyProxy.js'
+import { deleteIntegration, forwardGetWorkItem, forwardPostComment, listIntegrations, upsertIntegration, testConnection } from './azureDevOps.js'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const app = express()
+
+// Run history can carry real failure logs (a few KB each) across many
+// templates — default 100kb body limit is too easy to hit on a full state save.
+app.use(express.json({ limit: '10mb' }))
+
+const PORT = Number(process.env.PORT) || 4001
+const CLIENT_DIST = process.env.CLIENT_DIST || path.join(__dirname, '../../dist')
+
+app.post('/api/login', (req, res) => {
+  const username = String(req.body?.username ?? '')
+  const password = String(req.body?.password ?? '')
+  const result = login(username, password)
+  if (!result) return res.status(401).json({ error: 'Incorrect username or password' })
+  setSessionCookie(res, result.token)
+  res.json({ role: result.role })
+})
+
+app.post('/api/logout', (req, res) => {
+  logout(getSessionToken(req))
+  clearSessionCookie(res)
+  res.json({ ok: true })
+})
+
+app.get('/api/session', (req, res) => {
+  res.json({ role: getSessionFromRequest(req)?.role ?? null })
+})
+
+// GET is readable by either role; PUT (replacing the whole saved state) is
+// admin-only — enforced here, not just by hiding buttons in the UI.
+app.get('/api/state', requireAuth, (_req, res) => {
+  res.json(getState())
+})
+
+app.put('/api/state', requireAdmin, (req, res) => {
+  setState(req.body as AppState)
+  res.json({ ok: true })
+})
+
+// Both roles can read through to Symphony — these endpoints only ever GET
+// data from Symphony on this app's behalf, so there's nothing to restrict
+// to admin here specifically (the state write above is the real gate).
+app.use('/api/symphony-auth', requireAuth, proxySymphonyAuth)
+app.use('/api/symphony-dnd', requireAuth, proxySymphonyDnd)
+
+// Azure DevOps integrations — a list now, so one deployment can link
+// several orgs and a ticket picks which one it belongs to. Org/project
+// aren't secret (both roles can read them, e.g. to populate the ticket
+// form's org picker), but the PAT itself never leaves this process; only
+// admin can add, remove or test one.
+app.get('/api/integrations/azuredevops', requireAuth, (_req, res) => {
+  res.json({ integrations: listIntegrations() })
+})
+app.post('/api/integrations/azuredevops', requireAdmin, (req, res) => {
+  const { organization, project, personalAccessToken } = req.body ?? {}
+  if (!organization || !project) return res.status(400).json({ error: 'Organization and project are required.' })
+  upsertIntegration({ organization, project, personalAccessToken })
+  res.json({ ok: true })
+})
+app.delete('/api/integrations/azuredevops/:organization', requireAdmin, (req, res) => {
+  deleteIntegration(req.params.organization)
+  res.json({ ok: true })
+})
+app.post('/api/integrations/azuredevops/test', requireAdmin, async (req, res) => {
+  const { organization, project, personalAccessToken } = req.body ?? {}
+  if (!organization || !project) return res.status(400).json({ error: 'Organization and project are required.' })
+  const result = await testConnection({ organization, project, personalAccessToken })
+  res.json(result)
+})
+
+// Per-ticket proxy, scoped by organization — both roles can pull a work
+// item's live status (same as the read-only Symphony proxies above);
+// posting a follow-up comment is a write action, gated the same way the
+// UI already gates that button.
+app.get('/api/azuredevops/:organization/workitems/:id', requireAuth, forwardGetWorkItem)
+app.post('/api/azuredevops/:organization/workitems/:id/comment', requireAdmin, forwardPostComment)
+
+app.use(express.static(CLIENT_DIST))
+app.get('*', (_req, res) => {
+  res.sendFile(path.join(CLIENT_DIST, 'index.html'))
+})
+
+app.listen(PORT, () => {
+  console.log(`Vertex Regression Studio server listening on :${PORT}`)
+})

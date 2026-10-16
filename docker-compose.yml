@@ -1,0 +1,19 @@
+# Project name pinned explicitly (rather than left to default to this
+# folder's name) so the "flexiflow-data" volume below — and the real data
+# in it — stays the exact same volume no matter what the app is branded as
+# or what this directory gets renamed to later.
+name: flexiflow-regression-studio
+
+services:
+  vertex:
+    build: .
+    ports:
+      - "8080:80"
+    env_file:
+      - ./server/.env
+    volumes:
+      - flexiflow-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  flexiflow-data:

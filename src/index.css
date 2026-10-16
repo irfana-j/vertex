@@ -1,0 +1,77 @@
+:root {
+  --bg: #f5f6fb;
+  --surface: #ffffff;
+  --surface-2: #fafafd;
+  --border: #e3e5f0;
+  --border-strong: #cdd0e3;
+  --text: #191b32;
+  --text-muted: #666a85;
+  --text-faint: #8d90a8;
+  --primary: #6558e4;
+  --primary-dark: #4e42c9;
+  --primary-soft: #eeebfc;
+  --success: #1fae6d;
+  --success-soft: #e4f7ee;
+  --warning: #d98a00;
+  --warning-soft: #fdf1dd;
+  --critical: #dc3d3d;
+  --critical-soft: #fce8e8;
+  --info: #2f80ed;
+  --info-soft: #e8f1fe;
+  --aws: #c97a00;
+  --azure: #0a6ed1;
+  --gcp: #1e8e5a;
+  --shadow: 0 1px 2px rgba(25, 27, 50, 0.05), 0 8px 24px rgba(25, 27, 50, 0.06);
+  --radius: 14px;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: 'Manrope', system-ui, sans-serif;
+  margin: 0;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+a {
+  color: inherit;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+}

@@ -1,0 +1,144 @@
+import type { Request, Response } from 'express'
+import { getAzureDevOpsIntegrations, setAzureDevOpsIntegrations, type AzureDevOpsIntegration } from './db.js'
+
+// Mirrors the reference logic: Basic auth with an empty username and the
+// PAT as the password is the standard header Azure DevOps expects.
+function authHeader(pat: string): string {
+  return `Basic ${Buffer.from(`:${pat}`).toString('base64')}`
+}
+
+function workItemUrl(organization: string, id: string): string {
+  return `https://dev.azure.com/${organization}/_workitems/edit/${id}`
+}
+
+// States that mean "this is done, as far as Azure DevOps is concerned" —
+// same list the reference logic's SyncIncidentTickets checks against.
+const TERMINAL_STATES = new Set(['done', 'closed', 'resolved', 'completed', 'removed', 'cancelled'])
+export function isTerminalAdoState(state: string): boolean {
+  return TERMINAL_STATES.has(state.trim().toLowerCase())
+}
+
+function findIntegration(organization: string): AzureDevOpsIntegration | null {
+  return getAzureDevOpsIntegrations().find((c) => c.organization === organization) || null
+}
+
+export function listIntegrations(): { organization: string; project: string; configured: boolean }[] {
+  return getAzureDevOpsIntegrations().map((c) => ({
+    organization: c.organization,
+    project: c.project,
+    configured: Boolean(c.organization && c.project && c.personalAccessToken),
+  }))
+}
+
+// A PAT left blank on an update means "keep the one already saved" for
+// that organization — so fixing a typo in the project name doesn't force
+// re-entering the token.
+export function upsertIntegration(input: { organization: string; project: string; personalAccessToken?: string }): void {
+  const organization = input.organization.trim()
+  const list = getAzureDevOpsIntegrations()
+  const existing = list.find((c) => c.organization === organization)
+  const entry: AzureDevOpsIntegration = {
+    organization,
+    project: input.project.trim(),
+    personalAccessToken: input.personalAccessToken?.trim() || existing?.personalAccessToken || '',
+  }
+  const next = existing ? list.map((c) => (c.organization === organization ? entry : c)) : [...list, entry]
+  setAzureDevOpsIntegrations(next)
+}
+
+export function deleteIntegration(organization: string): void {
+  setAzureDevOpsIntegrations(getAzureDevOpsIntegrations().filter((c) => c.organization !== organization))
+}
+
+export async function testConnection(input: {
+  organization: string
+  project: string
+  personalAccessToken?: string
+}): Promise<{ ok: boolean; error?: string }> {
+  const organization = input.organization.trim()
+  const project = input.project.trim()
+  const existing = findIntegration(organization)
+  const pat = input.personalAccessToken?.trim() || existing?.personalAccessToken || ''
+  if (!organization || !project || !pat) return { ok: false, error: 'Organization, project and a personal access token are all required.' }
+  try {
+    const res = await fetch(`https://dev.azure.com/${organization}/_apis/projects/${project}?api-version=7.1`, {
+      headers: { Authorization: authHeader(pat) },
+    })
+    if (res.ok) return { ok: true }
+    if (res.status === 401 || res.status === 203) return { ok: false, error: 'Azure DevOps rejected the token (401) — check the PAT and its work item read/write scope.' }
+    if (res.status === 404) return { ok: false, error: `No project "${project}" found in organization "${organization}".` }
+    return { ok: false, error: `Azure DevOps returned ${res.status}.` }
+  } catch (err) {
+    return { ok: false, error: `Could not reach Azure DevOps: ${String(err)}` }
+  }
+}
+
+// GET a work item's current state — used both by the client's manual
+// "Sync from board" and by its periodic auto-sync. Returns the raw ADO
+// state string (and whether it's terminal) rather than guessing how it
+// maps onto this app's own ticket statuses — that decision belongs to the
+// client, which also knows the ticket's current local status.
+export async function forwardGetWorkItem(req: Request, res: Response): Promise<void> {
+  const config = findIntegration(req.params.organization)
+  if (!config || !config.project || !config.personalAccessToken) {
+    res.status(400).json({ error: `Azure DevOps organization "${req.params.organization}" is not configured.` })
+    return
+  }
+  const id = req.params.id
+  try {
+    const upstream = await fetch(
+      `https://dev.azure.com/${config.organization}/${config.project}/_apis/wit/workitems/${id}?api-version=7.1`,
+      { headers: { Authorization: authHeader(config.personalAccessToken) } }
+    )
+    if (!upstream.ok) {
+      res.status(upstream.status).json({ error: `Azure DevOps GET work item failed: ${upstream.status}` })
+      return
+    }
+    const data = (await upstream.json()) as {
+      fields?: {
+        'System.State'?: string
+        'System.Title'?: string
+        'System.AssignedTo'?: { displayName?: string }
+        'System.ChangedDate'?: string
+      }
+    }
+    const state = data.fields?.['System.State'] || ''
+    res.json({
+      state,
+      isTerminal: isTerminalAdoState(state),
+      title: data.fields?.['System.Title'] || '',
+      assignee: data.fields?.['System.AssignedTo']?.displayName || '',
+      lastActivityAt: data.fields?.['System.ChangedDate'] ? new Date(data.fields['System.ChangedDate']).getTime() : Date.now(),
+      url: workItemUrl(config.organization, id),
+    })
+  } catch (err) {
+    res.status(502).json({ error: `Azure DevOps upstream request failed: ${String(err)}` })
+  }
+}
+
+export async function forwardPostComment(req: Request, res: Response): Promise<void> {
+  const config = findIntegration(req.params.organization)
+  if (!config || !config.project || !config.personalAccessToken) {
+    res.status(400).json({ error: `Azure DevOps organization "${req.params.organization}" is not configured.` })
+    return
+  }
+  const id = req.params.id
+  const text = String(req.body?.text ?? '')
+  try {
+    const upstream = await fetch(
+      `https://dev.azure.com/${config.organization}/${config.project}/_apis/wit/workItems/${id}/comments?api-version=7.1-preview.3`,
+      {
+        method: 'POST',
+        headers: { Authorization: authHeader(config.personalAccessToken), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      }
+    )
+    if (!upstream.ok) {
+      res.status(upstream.status).json({ error: `Azure DevOps post comment failed: ${upstream.status}` })
+      return
+    }
+    res.json({ ok: true, postedAt: Date.now(), url: workItemUrl(config.organization, id) })
+  } catch (err) {
+    res.status(502).json({ error: `Azure DevOps upstream request failed: ${String(err)}` })
+  }
+}
