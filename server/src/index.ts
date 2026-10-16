@@ -89,6 +89,18 @@ app.get('*', (_req, res) => {
   res.sendFile(path.join(CLIENT_DIST, 'index.html'))
 })
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Vertex Regression Studio server listening on :${PORT}`)
 })
+
+// Behind an AWS ALB (or any proxy that pools/reuses keep-alive connections):
+// Node's own default keepAliveTimeout is 5s, well under the ALB's default
+// 60s idle timeout. That gap means Node can close a pooled connection the
+// ALB still considers live — the ALB then forwards the next request over a
+// socket that's already dead on this end, which it reports back to the
+// client as a 502, even while the target group itself shows healthy (health
+// checks open their own fresh connection each time, so they never hit this
+// race). Setting this above the ALB's idle timeout avoids the race;
+// headersTimeout must stay above keepAliveTimeout or Node ignores it.
+server.keepAliveTimeout = 65000
+server.headersTimeout = 66000
