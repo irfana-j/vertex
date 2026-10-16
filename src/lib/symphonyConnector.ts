@@ -12,38 +12,17 @@ import type { FlowEdge, FlowNode, SymphonyConnectionStatus, SymphonyJobDetail, S
 // This app owns everything about tracking those templates for regression
 // (use cases, owner, schedule, tickets, cycles).
 //
-// ---- THIS IS THE FILE: wiring up the real Symphony API ----
-// 1. Copy .env.example (repo root) to .env.local and fill in
-//    VITE_SYMPHONY_BASE_URL, and either VITE_SYMPHONY_API_TOKEN (a static
-//    token) or VITE_SYMPHONY_TOKEN_URL + VITE_SYMPHONY_CUSTOMER_CODE +
-//    VITE_SYMPHONY_USERNAME + VITE_SYMPHONY_PASSWORD (exchanged for a
-//    bearer token at request time — see getSymphonyBearerToken() below).
-// 2. Replace the body of each exported function below with a real
-//    fetch() — a worked example sits above listSymphonyTemplates().
-// 3. Read .env.example's security note first: a real API token (or the
-//    username/password used to fetch one) baked in via VITE_* ships to
-//    every browser that loads this app. Fine for your own machine; for
-//    anything shared, put the token exchange behind a backend proxy
-//    instead and have these functions call that proxy.
-const SYMPHONY_BASE_URL = import.meta.env.VITE_SYMPHONY_BASE_URL
+// ---- Symphony is wired up server-side (see server/src/symphonyProxy.ts) ----
+// Customer code / username / password live only on the server now (its own
+// SYMPHONY_CUSTOMER_CODE / SYMPHONY_USERNAME / SYMPHONY_PASSWORD env vars),
+// never in the client bundle — so there's nothing Symphony-specific this
+// app needs baked in at build time (.env.local) at all anymore. The two
+// constants below default to this app's own backend proxy paths; only
+// override them via VITE_SYMPHONY_BASE_URL/VITE_SYMPHONY_TOKEN_URL if
+// you're pointing somewhere other than that proxy for some reason.
+const SYMPHONY_BASE_URL = import.meta.env.VITE_SYMPHONY_BASE_URL || '/api/symphony-dnd'
 const SYMPHONY_API_TOKEN = import.meta.env.VITE_SYMPHONY_API_TOKEN
-const SYMPHONY_TOKEN_URL = import.meta.env.VITE_SYMPHONY_TOKEN_URL
-const SYMPHONY_CUSTOMER_CODE = import.meta.env.VITE_SYMPHONY_CUSTOMER_CODE
-const SYMPHONY_USERNAME = import.meta.env.VITE_SYMPHONY_USERNAME
-// Expected base64-encoded in .env.local rather than plain text — same
-// non-goal as the server's ADMIN_PASSWORD/USER_PASSWORD: not encryption,
-// just keeps it from being plainly readable at a glance in the file. Falls
-// back to the raw value if it isn't valid base64, so an unencoded password
-// still works rather than silently breaking the token exchange.
-function decodeBase64(value: string | undefined): string {
-  if (!value) return ''
-  try {
-    return atob(value)
-  } catch {
-    return value
-  }
-}
-const SYMPHONY_PASSWORD = decodeBase64(import.meta.env.VITE_SYMPHONY_PASSWORD)
+const SYMPHONY_TOKEN_URL = import.meta.env.VITE_SYMPHONY_TOKEN_URL || '/api/symphony-auth/token'
 
 // Every real Symphony response below is parsed defensively (`any`/optional
 // chaining) rather than fully typed — the exact field names are confirmed
@@ -86,11 +65,9 @@ async function getSymphonyBearerToken(): Promise<string | null> {
   if (SYMPHONY_API_TOKEN) return SYMPHONY_API_TOKEN
   if (!SYMPHONY_TOKEN_URL) return null
   if (cachedToken && Date.now() - cachedTokenAt < TOKEN_TTL_MS) return cachedToken
-  const res = await fetch(SYMPHONY_TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ customerCode: SYMPHONY_CUSTOMER_CODE, username: SYMPHONY_USERNAME, password: SYMPHONY_PASSWORD }),
-  })
+  // No credentials in the body — the server fills those in from its own
+  // env vars (see server/src/symphonyProxy.ts) regardless of what's sent.
+  const res = await fetch(SYMPHONY_TOKEN_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
   if (!res.ok) throw new Error(`Symphony token exchange failed: ${res.status}`)
   const data: RawApiResponse = await res.json()
   // Adjust this once the real response shape is confirmed — common shapes

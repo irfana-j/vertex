@@ -6,13 +6,27 @@ import type { Request, Response } from 'express'
 const SYMPHONY_TOKEN_UPSTREAM = process.env.SYMPHONY_TOKEN_UPSTREAM || 'https://api.qa.symphony4cloud.com/symphony-core-external/api/auth'
 const SYMPHONY_DND_UPSTREAM = process.env.SYMPHONY_DND_UPSTREAM || 'https://dnd.qa.symphony4cloud.com/symphony-dnd/api'
 
-async function forward(targetBase: string, req: Request, res: Response, extraHeaders: Record<string, string> = {}) {
+// Same reasoning as ADMIN_PASSWORD/USER_PASSWORD: base64, not plain text,
+// not encryption — just not readable at a glance in an env file.
+function decodeBase64(value: string | undefined): string {
+  if (!value) return ''
+  try {
+    return Buffer.from(value, 'base64').toString('utf8')
+  } catch {
+    return value
+  }
+}
+const SYMPHONY_CUSTOMER_CODE = process.env.SYMPHONY_CUSTOMER_CODE || ''
+const SYMPHONY_USERNAME = process.env.SYMPHONY_USERNAME || ''
+const SYMPHONY_PASSWORD = decodeBase64(process.env.SYMPHONY_PASSWORD)
+
+async function forward(targetBase: string, req: Request, res: Response, extraHeaders: Record<string, string> = {}, body?: unknown) {
   try {
     const targetUrl = `${targetBase}${req.url}`
     const upstreamRes = await fetch(targetUrl, {
       method: req.method,
       headers: { Accept: 'application/json', ...extraHeaders },
-      body: req.method === 'GET' || req.method === 'HEAD' ? undefined : JSON.stringify(req.body),
+      body: req.method === 'GET' || req.method === 'HEAD' ? undefined : JSON.stringify(body ?? req.body),
     })
     const text = await upstreamRes.text()
     res
@@ -24,13 +38,16 @@ async function forward(targetBase: string, req: Request, res: Response, extraHea
   }
 }
 
-// The client's own token POST body ({ customerCode, username, password })
-// still goes through as-is to Symphony's real token endpoint — this proxy
-// only relocates WHERE the browser's request lands, not the credentials
-// flow. (A future tightening could hold those three values server-side
-// entirely and have the client call this with no body at all.)
+// The browser no longer sends any credentials here at all — whatever body
+// it posts is ignored in favor of this process's own env vars, so there's
+// nothing Symphony-specific left to bake into the client bundle at build
+// time. Customer code/username/password live only here now.
 export function proxySymphonyAuth(req: Request, res: Response) {
-  return forward(SYMPHONY_TOKEN_UPSTREAM, req, res, { 'Content-Type': 'application/json' })
+  return forward(SYMPHONY_TOKEN_UPSTREAM, req, res, { 'Content-Type': 'application/json' }, {
+    customerCode: SYMPHONY_CUSTOMER_CODE,
+    username: SYMPHONY_USERNAME,
+    password: SYMPHONY_PASSWORD,
+  })
 }
 
 export function proxySymphonyDnd(req: Request, res: Response) {
