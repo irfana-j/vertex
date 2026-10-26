@@ -14,12 +14,26 @@ declare global {
 }
 
 const SESSION_COOKIE = 'vertex_session'
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
+// Idle timeout, not a fixed expiry from login — every authenticated
+// request refreshes lastActivityAt, so someone actively using the app
+// never gets logged out mid-session; thirty minutes of no requests at all
+// (tab left open and unused, laptop closed, etc.) expires it. A page
+// refresh after that point naturally lands back on the login screen next
+// time checkSession() runs, since /api/session will no longer recognize
+// the cookie; a refresh before that point just reloads normally.
+const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000
+// The cookie's own browser-side lifetime is separate from (and longer
+// than) the idle timeout above — it's just how long the browser holds
+// onto the cookie at all, not re-issued on every request. The real
+// enforcement is server-side: the in-memory session entry it points at
+// gets dropped after 30 idle minutes regardless of how long the cookie
+// itself still has left.
+const COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
 // In-memory — a restart logs everyone out, which is a fine trade-off for
 // two people on an internal tool. Real credentials never touch the DB;
 // they're only ever compared against env vars set on the server.
-const sessions = new Map<string, { role: Role; createdAt: number }>()
+const sessions = new Map<string, { role: Role; lastActivityAt: number }>()
 
 // ADMIN_PASSWORD / USER_PASSWORD are expected base64-encoded (e.g.
 // `echo -n 'the real password' | base64`) rather than plain text — this is
@@ -57,7 +71,7 @@ export function login(username: string, password: string): { token: string; role
   else if (userPassword() && username === userUsername() && password === userPassword()) role = 'user'
   if (!role) return null
   const token = randomBytes(24).toString('hex')
-  sessions.set(token, { role, createdAt: Date.now() })
+  sessions.set(token, { role, lastActivityAt: Date.now() })
   return { token, role }
 }
 
@@ -74,10 +88,11 @@ function getSession(req: Request): { role: Role } | null {
   if (!token) return null
   const session = sessions.get(token)
   if (!session) return null
-  if (Date.now() - session.createdAt > SESSION_TTL_MS) {
+  if (Date.now() - session.lastActivityAt > SESSION_IDLE_TIMEOUT_MS) {
     sessions.delete(token)
     return null
   }
+  session.lastActivityAt = Date.now()
   return { role: session.role }
 }
 
@@ -92,7 +107,7 @@ export function setSessionCookie(res: Response, token: string) {
       httpOnly: true,
       sameSite: 'lax',
       path: '/',
-      maxAge: SESSION_TTL_MS / 1000,
+      maxAge: COOKIE_MAX_AGE_MS / 1000,
     })
   )
 }
