@@ -18,12 +18,14 @@ export function isTerminalAdoState(state: string): boolean {
   return TERMINAL_STATES.has(state.trim().toLowerCase())
 }
 
-function findIntegration(organization: string): AzureDevOpsIntegration | null {
-  return getAzureDevOpsIntegrations().find((c) => c.organization === organization) || null
+async function findIntegration(organization: string): Promise<AzureDevOpsIntegration | null> {
+  const list = await getAzureDevOpsIntegrations()
+  return list.find((c) => c.organization === organization) || null
 }
 
-export function listIntegrations(): { organization: string; project: string; configured: boolean }[] {
-  return getAzureDevOpsIntegrations().map((c) => ({
+export async function listIntegrations(): Promise<{ organization: string; project: string; configured: boolean }[]> {
+  const list = await getAzureDevOpsIntegrations()
+  return list.map((c) => ({
     organization: c.organization,
     project: c.project,
     configured: Boolean(c.organization && c.project && c.personalAccessToken),
@@ -33,9 +35,9 @@ export function listIntegrations(): { organization: string; project: string; con
 // A PAT left blank on an update means "keep the one already saved" for
 // that organization — so fixing a typo in the project name doesn't force
 // re-entering the token.
-export function upsertIntegration(input: { organization: string; project: string; personalAccessToken?: string }): void {
+export async function upsertIntegration(input: { organization: string; project: string; personalAccessToken?: string }): Promise<void> {
   const organization = input.organization.trim()
-  const list = getAzureDevOpsIntegrations()
+  const list = await getAzureDevOpsIntegrations()
   const existing = list.find((c) => c.organization === organization)
   const entry: AzureDevOpsIntegration = {
     organization,
@@ -43,11 +45,12 @@ export function upsertIntegration(input: { organization: string; project: string
     personalAccessToken: input.personalAccessToken?.trim() || existing?.personalAccessToken || '',
   }
   const next = existing ? list.map((c) => (c.organization === organization ? entry : c)) : [...list, entry]
-  setAzureDevOpsIntegrations(next)
+  await setAzureDevOpsIntegrations(next)
 }
 
-export function deleteIntegration(organization: string): void {
-  setAzureDevOpsIntegrations(getAzureDevOpsIntegrations().filter((c) => c.organization !== organization))
+export async function deleteIntegration(organization: string): Promise<void> {
+  const list = await getAzureDevOpsIntegrations()
+  await setAzureDevOpsIntegrations(list.filter((c) => c.organization !== organization))
 }
 
 export async function testConnection(input: {
@@ -57,7 +60,7 @@ export async function testConnection(input: {
 }): Promise<{ ok: boolean; error?: string }> {
   const organization = input.organization.trim()
   const project = input.project.trim()
-  const existing = findIntegration(organization)
+  const existing = await findIntegration(organization)
   const pat = input.personalAccessToken?.trim() || existing?.personalAccessToken || ''
   if (!organization || !project || !pat) return { ok: false, error: 'Organization, project and a personal access token are all required.' }
   try {
@@ -79,7 +82,7 @@ export async function testConnection(input: {
 // maps onto this app's own ticket statuses — that decision belongs to the
 // client, which also knows the ticket's current local status.
 export async function forwardGetWorkItem(req: Request, res: Response): Promise<void> {
-  const config = findIntegration(req.params.organization)
+  const config = await findIntegration(req.params.organization)
   if (!config || !config.project || !config.personalAccessToken) {
     res.status(400).json({ error: `Azure DevOps organization "${req.params.organization}" is not configured.` })
     return
@@ -117,7 +120,7 @@ export async function forwardGetWorkItem(req: Request, res: Response): Promise<v
 }
 
 export async function forwardPostComment(req: Request, res: Response): Promise<void> {
-  const config = findIntegration(req.params.organization)
+  const config = await findIntegration(req.params.organization)
   if (!config || !config.project || !config.personalAccessToken) {
     res.status(400).json({ error: `Azure DevOps organization "${req.params.organization}" is not configured.` })
     return

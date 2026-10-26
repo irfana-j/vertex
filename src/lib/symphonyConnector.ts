@@ -403,7 +403,14 @@ export async function listSymphonyTemplates(): Promise<SymphonyTemplateList> {
       // account's own templates (myTemplateCount), which misses templates
       // owned by other users.
       viewAllTemplatesFlag: false,
-      favouriteFlag: true,
+      // Was `true` — unlike every other flag here, it had no comment
+      // explaining why, which is exactly how a one-off incidental UI state
+      // (Symphony's own "Favorites" toggle happening to be on when this
+      // request was captured) ends up baked in by accident. `false` here
+      // matches favButton below (already `false`) and stops this from
+      // silently filtering out every template that was never individually
+      // favorited, regardless of whether the account has real access to it.
+      favouriteFlag: false,
       favButton: false,
       selectedTempStatus: 'All',
       sharedTemplateFlag: false,

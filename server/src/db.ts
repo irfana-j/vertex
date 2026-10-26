@@ -1,16 +1,13 @@
-import { DatabaseSync } from 'node:sqlite'
-import { mkdirSync } from 'node:fs'
-import path from 'node:path'
+import pg from 'pg'
 
-// A single JSON blob, not a normalized schema — the "dumb backend" design:
-// the client keeps running all its existing business logic (tracking,
-// syncing, groups, tickets, cycles) exactly as before, and just persists
-// its whole state here instead of to localStorage. Good enough for two
-// people; a real multi-writer app would need per-entity tables.
-//
-// Uses Node's built-in node:sqlite rather than a native addon like
-// better-sqlite3 — no C++ toolchain needed to install this, on Windows or
-// in the (Alpine) Docker image alike.
+const { Pool } = pg
+
+// A single JSON blob per table, not a normalized schema — the "dumb
+// backend" design: the client keeps running all its existing business
+// logic (tracking, syncing, groups, tickets, cycles) exactly as before,
+// and just persists its whole state here instead of to localStorage. Good
+// enough for two people; a real multi-writer app would need per-entity
+// tables regardless of which database sits underneath.
 export interface AppState {
   templates: unknown[]
   cycles: unknown[]
@@ -20,34 +17,49 @@ export interface AppState {
 
 const DEFAULT_STATE: AppState = { templates: [], cycles: [], activeCycleId: null, groups: [] }
 
-const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), 'data', 'app.db')
-mkdirSync(path.dirname(DB_PATH), { recursive: true })
+// DATABASE_URL is a standard Postgres connection string:
+// postgres://user:password@host:port/dbname
+const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
-const db = new DatabaseSync(DB_PATH)
-db.exec('PRAGMA journal_mode = WAL')
+// Both tables' schemas are created on first use rather than requiring a
+// separate migration step — there's nothing to migrate between versions
+// since each table is just one row holding a JSON blob.
+const ready = (async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      data JSONB NOT NULL,
+      updated_at BIGINT NOT NULL
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS integration_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      data JSONB NOT NULL,
+      updated_at BIGINT NOT NULL
+    )
+  `)
+})()
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS app_state (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    data TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
-  )
-`)
-
-export function getState(): AppState {
-  const row = db.prepare('SELECT data FROM app_state WHERE id = 1').get() as { data: string } | undefined
-  if (!row) {
-    setState(DEFAULT_STATE)
+export async function getState(): Promise<AppState> {
+  await ready
+  const { rows } = await pool.query<{ data: AppState }>('SELECT data FROM app_state WHERE id = 1')
+  if (!rows[0]) {
+    await setState(DEFAULT_STATE)
     return DEFAULT_STATE
   }
-  return JSON.parse(row.data) as AppState
+  // node-postgres parses a jsonb column back into a JS value already —
+  // no JSON.parse needed, unlike the TEXT column the SQLite version used.
+  return rows[0].data
 }
 
-export function setState(data: AppState): void {
-  db.prepare(
-    `INSERT INTO app_state (id, data, updated_at) VALUES (1, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`
-  ).run(JSON.stringify(data), Date.now())
+export async function setState(data: AppState): Promise<void> {
+  await ready
+  await pool.query(
+    `INSERT INTO app_state (id, data, updated_at) VALUES (1, $1, $2)
+     ON CONFLICT (id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
+    [JSON.stringify(data), Date.now()]
+  )
 }
 
 // Kept in its own table, never the app_state one above — the PAT in here
@@ -55,7 +67,7 @@ export function setState(data: AppState): void {
 // full. Nothing here is encrypted at rest (consistent with how
 // ADMIN_PASSWORD/USER_PASSWORD and the Symphony credentials are handled
 // elsewhere in this app — plain env vars / a local .env file) — it's only
-// as safe as whoever has access to this container's filesystem.
+// as safe as whoever has database access.
 // A list, not a single config — one Vertex deployment can link several
 // Azure DevOps organizations, and a ticket picks which one it belongs to.
 // Keyed by organization name (unique in practice — that's the tenant id).
@@ -65,26 +77,21 @@ export interface AzureDevOpsIntegration {
   personalAccessToken: string
 }
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS integration_settings (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    data TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
-  )
-`)
-
-export function getAzureDevOpsIntegrations(): AzureDevOpsIntegration[] {
-  const row = db.prepare('SELECT data FROM integration_settings WHERE id = 1').get() as { data: string } | undefined
-  if (!row) return []
-  const parsed = JSON.parse(row.data) as { azureDevOps?: unknown }
+export async function getAzureDevOpsIntegrations(): Promise<AzureDevOpsIntegration[]> {
+  await ready
+  const { rows } = await pool.query<{ data: { azureDevOps?: unknown } }>('SELECT data FROM integration_settings WHERE id = 1')
+  if (!rows[0]) return []
   // Older builds stored a single object here instead of a list — treat
   // that shape as empty rather than crashing on a shape mismatch.
-  return Array.isArray(parsed.azureDevOps) ? (parsed.azureDevOps as AzureDevOpsIntegration[]) : []
+  const azureDevOps = rows[0].data.azureDevOps
+  return Array.isArray(azureDevOps) ? (azureDevOps as AzureDevOpsIntegration[]) : []
 }
 
-export function setAzureDevOpsIntegrations(configs: AzureDevOpsIntegration[]): void {
-  db.prepare(
-    `INSERT INTO integration_settings (id, data, updated_at) VALUES (1, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`
-  ).run(JSON.stringify({ azureDevOps: configs }), Date.now())
+export async function setAzureDevOpsIntegrations(configs: AzureDevOpsIntegration[]): Promise<void> {
+  await ready
+  await pool.query(
+    `INSERT INTO integration_settings (id, data, updated_at) VALUES (1, $1, $2)
+     ON CONFLICT (id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
+    [JSON.stringify({ azureDevOps: configs }), Date.now()]
+  )
 }

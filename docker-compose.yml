@@ -1,19 +1,33 @@
 # Project name pinned explicitly (rather than left to default to this
-# folder's name) so the "flexiflow-data" volume below — and the real data
-# in it — stays the exact same volume no matter what the app is branded as
-# or what this directory gets renamed to later.
+# folder's name) so the volumes below — and the real data in them — stay
+# the exact same volumes no matter what the app is branded as or what this
+# directory gets renamed to later.
 name: flexiflow-regression-studio
 
 services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file:
+      - ./server/.env
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - vertex-postgres:/var/lib/postgresql/data
+
   vertex:
     build: .
     ports:
       - "8080:80"
     env_file:
       - ./server/.env
-    volumes:
-      - flexiflow-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  flexiflow-data:
+  vertex-postgres:

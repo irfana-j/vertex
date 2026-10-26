@@ -37,12 +37,12 @@ app.get('/api/session', (req, res) => {
 
 // GET is readable by either role; PUT (replacing the whole saved state) is
 // admin-only — enforced here, not just by hiding buttons in the UI.
-app.get('/api/state', requireAuth, (_req, res) => {
-  res.json(getState())
+app.get('/api/state', requireAuth, async (_req, res) => {
+  res.json(await getState())
 })
 
-app.put('/api/state', requireAdmin, (req, res) => {
-  setState(req.body as AppState)
+app.put('/api/state', requireAdmin, async (req, res) => {
+  await setState(req.body as AppState)
   res.json({ ok: true })
 })
 
@@ -57,17 +57,17 @@ app.use('/api/symphony-dnd', requireAuth, proxySymphonyDnd)
 // aren't secret (both roles can read them, e.g. to populate the ticket
 // form's org picker), but the PAT itself never leaves this process; only
 // admin can add, remove or test one.
-app.get('/api/integrations/azuredevops', requireAuth, (_req, res) => {
-  res.json({ integrations: listIntegrations() })
+app.get('/api/integrations/azuredevops', requireAuth, async (_req, res) => {
+  res.json({ integrations: await listIntegrations() })
 })
-app.post('/api/integrations/azuredevops', requireAdmin, (req, res) => {
+app.post('/api/integrations/azuredevops', requireAdmin, async (req, res) => {
   const { organization, project, personalAccessToken } = req.body ?? {}
   if (!organization || !project) return res.status(400).json({ error: 'Organization and project are required.' })
-  upsertIntegration({ organization, project, personalAccessToken })
+  await upsertIntegration({ organization, project, personalAccessToken })
   res.json({ ok: true })
 })
-app.delete('/api/integrations/azuredevops/:organization', requireAdmin, (req, res) => {
-  deleteIntegration(req.params.organization)
+app.delete('/api/integrations/azuredevops/:organization', requireAdmin, async (req, res) => {
+  await deleteIntegration(req.params.organization)
   res.json({ ok: true })
 })
 app.post('/api/integrations/azuredevops/test', requireAdmin, async (req, res) => {
