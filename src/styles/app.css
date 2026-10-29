@@ -287,6 +287,46 @@
   border-radius: 9px;
   margin: 16px 0 0;
 }
+
+.hydration-error {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 24px;
+}
+
+.idle-warning-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 8, 24, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.idle-warning-card {
+  background: #1c1733;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  padding: 24px 28px;
+  max-width: 360px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.idle-warning-card h3 {
+  margin: 0 0 10px;
+}
+.idle-warning-card p {
+  color: #c9c4e6;
+  font-size: 13.5px;
+  line-height: 1.5;
+  margin: 0 0 18px;
+}
 .login-page .login-card .login-submit {
   width: 100%;
   margin-top: 26px;

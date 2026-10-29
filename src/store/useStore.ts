@@ -60,7 +60,16 @@ interface PersistedState {
 const backendStorage: StateStorage = {
   getItem: async () => {
     const res = await fetch('/api/state', { credentials: 'include' })
-    if (!res.ok) return null
+    // The server always returns a valid body on success (DEFAULT_STATE at
+    // worst) — it never legitimately has "no state" — so a non-ok response
+    // here is a real failure (a 401 from a race right after login, a 502
+    // from the backend being briefly down, etc.), not "nothing persisted
+    // yet." Throwing instead of returning null matters: zustand's persist
+    // treats a null getItem as "no data, keep whatever's already in memory"
+    // and still marks hydration as finished successfully — which used to
+    // mean a transient failure here silently left the seed/mock demo data
+    // on screen with no error shown at all.
+    if (!res.ok) throw new Error(`Failed to load state (${res.status})`)
     const data = await res.json()
     return JSON.stringify({ state: data, version: STORE_VERSION })
   },
@@ -74,6 +83,16 @@ const backendStorage: StateStorage = {
     })
   },
   removeItem: async () => {},
+}
+
+// zustand's persist has no error-aware hook other than the `onRehydrateStorage`
+// factory below (fixed at persist() setup time), so App.tsx can't just pass a
+// callback into `rehydrate()` itself — this tiny pub/sub bridges that gap.
+type HydrationErrorListener = (message: string | null) => void
+const hydrationErrorListeners = new Set<HydrationErrorListener>()
+export function onHydrationError(cb: HydrationErrorListener): () => void {
+  hydrationErrorListeners.add(cb)
+  return () => hydrationErrorListeners.delete(cb)
 }
 
 function defaultCycleLabel(): string {
@@ -373,6 +392,21 @@ export const useStore = create<StoreState>()(
         // terminal state, instead of freezing it at whatever it looked
         // like the first time it was seen.
         //
+        // overallStatus alone isn't trustworthy for this, though — confirmed
+        // live: a Terraform-style run paused awaiting manual approval can
+        // report an overall status of "Failed" while every node is still
+        // sitting at "Planned"/"Awaiting", nothing actually executed yet.
+        // Trusting overallStatus alone would freeze that run as done forever
+        // once approved and actually run. So a run only counts as genuinely
+        // finished if its own last-seen per-node status text doesn't still
+        // show something non-terminal.
+        const PENDING_NODE_STATUS = /planned|awaiting|pending|queued/i
+        const isGenuinelyDone = (run: Run | undefined): boolean => {
+          if (!run) return false
+          if (run.overallStatus !== 'Success' && run.overallStatus !== 'Failed') return false
+          return !Object.values(run.liveStatus || {}).some((s) => PENDING_NODE_STATUS.test(s))
+        }
+        //
         // Detail fetches run a few at a time (mapWithConcurrency) —
         // listJobsForTemplate no longer has the real API narrow the job
         // list server-side (see its own comment), so a template with a
@@ -381,10 +415,7 @@ export const useStore = create<StoreState>()(
         // historical jobs; firing all of them at once instead got
         // "Failed to fetch" from the real Symphony host partway through —
         // a connection limit on its side, confirmed live.
-        const jobsNeedingDetail = jobs.filter((job) => {
-          const existing = existingById.get(job.jobId)
-          return !(existing && (existing.overallStatus === 'Success' || existing.overallStatus === 'Failed'))
-        })
+        const jobsNeedingDetail = jobs.filter((job) => !isGenuinelyDone(existingById.get(job.jobId)))
         const details = await mapWithConcurrency(jobsNeedingDetail, 4, (job) => getJobDetail(job.jobId))
         const newRuns: Run[] = []
         const updatedRuns = new Map<string | number, Run>()
@@ -584,6 +615,15 @@ export const useStore = create<StoreState>()(
       // itself right after login succeeds, instead of this running
       // automatically at module load.
       skipHydration: true,
+      // Fires on every rehydrate() call (initial post-login load AND the
+      // viewer's 60s background refresh), with `error` set only when
+      // getItem threw. Note zustand's own hydrate() swallows that rejection
+      // internally (its promise chain always resolves), so this is the only
+      // way to learn a rehydrate attempt actually failed.
+      onRehydrateStorage: () => (_state, error) => {
+        const message = error ? (error instanceof Error ? error.message : String(error)) : null
+        hydrationErrorListeners.forEach((cb) => cb(message))
+      },
       // lastAutoSyncAt is this browser's own observation of when ITS
       // auto-sync last ran, not shared app data — excluded so a viewer's
       // tab doesn't overwrite it with its own (never-running) null.

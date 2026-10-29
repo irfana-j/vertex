@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import TemplatesListPage from './pages/TemplatesListPage'
 import TemplateBuilderPage from './pages/TemplateBuilderPage'
@@ -8,8 +8,9 @@ import SymphonyStatus from './components/SymphonyStatus'
 import AutoSyncStatus from './components/AutoSyncStatus'
 import LoginScreen from './components/LoginScreen'
 import BrandMark from './components/BrandMark'
+import IdleTimeoutWarning from './components/IdleTimeoutWarning'
 import SettingsPage from './pages/SettingsPage'
-import { useStore } from './store/useStore'
+import { useStore, onHydrationError } from './store/useStore'
 import { useAuthStore } from './store/useAuthStore'
 
 const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000
@@ -40,6 +41,14 @@ export default function App() {
   const startNewCycle = useStore((s) => s.startNewCycle)
   const cycleCount = useStore((s) => s.cycles.length)
   const [hydrated, setHydrated] = useState(false)
+  const [hydrationError, setHydrationError] = useState<string | null>(null)
+  // Only the very first hydration attempt after login should block the
+  // whole screen on failure — the viewer's periodic 60s background refresh
+  // (src/App.tsx below) uses this same rehydrate() mechanism, and a
+  // transient blip there shouldn't yank an already-working session back to
+  // an error screen (zustand already leaves last-known-good state in place
+  // on a failed rehydrate, so there's nothing to fix there).
+  const hydratedOnceRef = useRef(false)
 
   useEffect(() => {
     checkSession()
@@ -51,10 +60,32 @@ export default function App() {
   useEffect(() => {
     if (authStatus !== 'authenticated') return
     setHydrated(false)
-    const unsub = useStore.persist.onFinishHydration(() => setHydrated(true))
+    setHydrationError(null)
+    hydratedOnceRef.current = false
+    const unsubFinish = useStore.persist.onFinishHydration(() => {
+      hydratedOnceRef.current = true
+      setHydrated(true)
+      setHydrationError(null)
+    })
+    const unsubError = onHydrationError((message) => {
+      if (!message) return
+      if (hydratedOnceRef.current) {
+        console.error('Background state refresh failed:', message)
+        return
+      }
+      setHydrationError(message)
+    })
     useStore.persist.rehydrate()
-    return unsub
+    return () => {
+      unsubFinish()
+      unsubError()
+    }
   }, [authStatus])
+
+  const retryHydration = () => {
+    setHydrationError(null)
+    useStore.persist.rehydrate()
+  }
 
   // First-ever login against a brand-new backend has no cycle yet — give it
   // one so the rest of the app (which assumes an active cycle) has
@@ -96,10 +127,21 @@ export default function App() {
 
   if (authStatus === 'checking') return <FullScreenMessage text="Loading…" />
   if (authStatus === 'anonymous') return <LoginScreen />
+  if (hydrationError) {
+    return (
+      <div className="hydration-error">
+        <p>Couldn't load regression data: {hydrationError}</p>
+        <button className="btn" onClick={retryHydration}>
+          Retry
+        </button>
+      </div>
+    )
+  }
   if (!hydrated) return <FullScreenMessage text="Loading regression data…" />
 
   return (
     <div className="shell">
+      <IdleTimeoutWarning />
       <aside className="sidebar">
         <div className="brand">
           <BrandMark className="mark" />
