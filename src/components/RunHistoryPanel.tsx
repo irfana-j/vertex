@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from 'react'
 import { useAuthStore } from '../store/useAuthStore'
 import { TICKET_STATUSES } from '../data/constants'
-import { listAzureDevOpsIntegrations } from '../lib/devopsConnector'
+import { listAzureDevOpsIntegrations, canSyncFromBoard } from '../lib/devopsConnector'
 import { getTicketForRun, getTicketsForTemplateInCycle, getScenarioNodes, isTicketStale, daysSinceActivity } from '../lib/selectors'
 import type { AzureDevOpsIntegrationEntry, Cycle, NewTicketInput, Run, Template, TicketStatus } from '../types'
 
@@ -122,6 +122,7 @@ export default function RunHistoryPanel({ template, cycles, activeCycleId, onLog
   const [expandedRun, setExpandedRun] = useState<string | number | null>(null)
   const [openGeneralForm, setOpenGeneralForm] = useState(false)
   const [busyTicketId, setBusyTicketId] = useState<string | null>(null)
+  const [syncingAll, setSyncingAll] = useState(false)
   const [ticketActionError, setTicketActionError] = useState<string | null>(null)
 
   const runs = [...(template.runHistory || [])].sort((a, b) => b.timestamp - a.timestamp)
@@ -136,6 +137,26 @@ export default function RunHistoryPanel({ template, cycles, activeCycleId, onLog
       setTimeout(() => setTicketActionError(null), 5000)
     } finally {
       setBusyTicketId(null)
+    }
+  }
+  const handleSyncAll = async () => {
+    setSyncingAll(true)
+    setTicketActionError(null)
+    const failures: string[] = []
+    for (const t of tickets.filter((t) => canSyncFromBoard(t))) {
+      try {
+        await onSyncTicket(template.id, t.id)
+      } catch (err) {
+        // One ticket's board call failing (a transient Azure DevOps blip,
+        // a renamed/deleted work item) shouldn't stop the rest from
+        // syncing — same reasoning as the dashboard's "Sync all" action.
+        failures.push(`${t.ticketId}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    setSyncingAll(false)
+    if (failures.length) {
+      setTicketActionError(`${failures.length} ticket(s) failed to sync — ${failures.join('; ')}`)
+      setTimeout(() => setTicketActionError(null), 7000)
     }
   }
   const handleFollowUp = async (ticketId: string) => {
@@ -262,9 +283,16 @@ export default function RunHistoryPanel({ template, cycles, activeCycleId, onLog
             <p className="p-sub">Raised against a specific failed node, or as a general backlog item. Status syncs live from the board.</p>
           </div>
           {isAdmin && (
-            <button className="btn small" onClick={() => setOpenGeneralForm((v) => !v)}>
-              + Add general ticket
-            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {tickets.some((t) => canSyncFromBoard(t)) && (
+                <button className="btn small" onClick={handleSyncAll} disabled={syncingAll}>
+                  {syncingAll ? 'Syncing…' : '⟳ Sync all'}
+                </button>
+              )}
+              <button className="btn small" onClick={() => setOpenGeneralForm((v) => !v)}>
+                + Add general ticket
+              </button>
+            </div>
           )}
         </div>
         {ticketActionError && (
@@ -311,17 +339,27 @@ export default function RunHistoryPanel({ template, cycles, activeCycleId, onLog
                       {t.system} · {t.assignee || 'Unassigned'} · {days === null ? 'no activity yet' : `updated ${days}d ago`}
                     </div>
                     <div className="tcard-bottom">
-                      <select
-                        className={`tstatus-select ${t.status.replace(/[^a-z]/gi, '').toLowerCase()}`}
-                        value={t.status}
-                        disabled={!isAdmin}
-                        onChange={(e) => onUpdateTicket(template.id, t.id, { status: e.target.value as TicketStatus })}
-                      >
-                        {TICKET_STATUSES.map((s) => (
-                          <option key={s}>{s}</option>
-                        ))}
-                      </select>
-                      {isAdmin && (
+                      {canSyncFromBoard(t) ? (
+                        <span
+                          className={`tstatus ${t.status.replace(/[^a-z]/gi, '').toLowerCase()}`}
+                          title="Synced from the board — use Sync to refresh it, not editable here"
+                        >
+                          {t.status}
+                        </span>
+                      ) : (
+                        <select
+                          className={`tstatus-select ${t.status.replace(/[^a-z]/gi, '').toLowerCase()}`}
+                          value={t.status}
+                          disabled={!isAdmin}
+                          title="No linked board for this ticket — set its status by hand"
+                          onChange={(e) => onUpdateTicket(template.id, t.id, { status: e.target.value as TicketStatus })}
+                        >
+                          {TICKET_STATUSES.map((s) => (
+                            <option key={s}>{s}</option>
+                          ))}
+                        </select>
+                      )}
+                      {isAdmin && canSyncFromBoard(t) && (
                         <div style={{ display: 'flex', gap: 6 }}>
                           <button className="icon-btn" title="Sync status from board" disabled={busy} onClick={() => handleSync(t.id)}>
                             ⟳

@@ -4,6 +4,7 @@ import { useStore } from '../store/useStore'
 import { useAuthStore } from '../store/useAuthStore'
 import { computeDashboard, computeCustomGroupDashboard, computeCycleTrend, isTicketOpen, isTicketStale, daysSinceActivity } from '../lib/selectors'
 import { getGroupColor, TICKET_STATUSES } from '../data/constants'
+import { canSyncFromBoard } from '../lib/devopsConnector'
 import Donut from '../components/dashboard/Donut'
 import type { CycleTrendPoint, TicketStatus } from '../types'
 
@@ -656,17 +657,27 @@ export default function DashboardPage() {
                     {t.system} · {t.assignee || 'Unassigned'} · {days === null ? 'no activity yet' : `updated ${days}d ago`}
                   </div>
                   <div className="tcard-bottom">
-                    <select
-                      className={`tstatus-select ${ticketStatusClass(t.status)}`}
-                      value={t.status}
-                      disabled={!isAdmin}
-                      onChange={(e) => updateTicket(t.templateId, t.id, { status: e.target.value as TicketStatus })}
-                    >
-                      {TICKET_STATUSES.map((s) => (
-                        <option key={s}>{s}</option>
-                      ))}
-                    </select>
-                    {isAdmin && (
+                    {canSyncFromBoard(t) ? (
+                      <span
+                        className={`tstatus ${ticketStatusClass(t.status)}`}
+                        title="Synced from the board — use Sync to refresh it, not editable here"
+                      >
+                        {t.status}
+                      </span>
+                    ) : (
+                      <select
+                        className={`tstatus-select ${ticketStatusClass(t.status)}`}
+                        value={t.status}
+                        disabled={!isAdmin}
+                        title="No linked board for this ticket — set its status by hand"
+                        onChange={(e) => updateTicket(t.templateId, t.id, { status: e.target.value as TicketStatus })}
+                      >
+                        {TICKET_STATUSES.map((s) => (
+                          <option key={s}>{s}</option>
+                        ))}
+                      </select>
+                    )}
+                    {isAdmin && canSyncFromBoard(t) && (
                       <div style={{ display: 'flex', gap: 6 }}>
                         <button className="icon-btn" title="Sync status from board" disabled={busy} onClick={() => handleSyncTicket(t.templateId, t.id)}>
                           ⟳

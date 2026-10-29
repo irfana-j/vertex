@@ -137,6 +137,19 @@ const BOARD_STATE: Record<string, { status: TicketStatus; assignee: string; summ
   'TCKT-5001': { status: 'Open', assignee: 'Cloud DevOps', summary: 'Retention policy conflict on existing prod-backup vault', lastActivityAt: now - 11 * day },
 }
 
+// Whether a ticket actually has a real board behind it to sync status
+// from — an Azure DevOps ticket needs a linked organization (one logged
+// before multi-org support existed, or created with "No board link
+// (manual)", has none), and a Jira one needs this deployment's Jira env
+// vars configured. Anything else is a purely local/manual ticket with
+// nothing to sync against, so its status has to stay hand-editable instead
+// of presenting a "live from the board" status that isn't backed by one.
+export function canSyncFromBoard(ticket: { system: TicketSystem; organization: string | null }): boolean {
+  if (ticket.system === 'Azure DevOps') return Boolean(ticket.organization)
+  if (ticket.system === 'Jira') return JIRA_CONFIGURED
+  return false
+}
+
 export async function getTicketStatus({
   system,
   ticketId,

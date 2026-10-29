@@ -18,6 +18,33 @@ export function isTerminalAdoState(state: string): boolean {
   return TERMINAL_STATES.has(state.trim().toLowerCase())
 }
 
+// Azure DevOps's REST API occasionally answers a perfectly normal GET with
+// a transient 429 (rate limit) or a 502/503/504, or the outbound fetch
+// itself throws (a DNS/connection blip) — confirmed in practice as
+// intermittent "sync error" on the client even on a plain status check,
+// not just under heavy load. None of that means the work item sync
+// actually failed; retrying a couple of times below resolves it instead of
+// surfacing a one-off network hiccup as a hard error. A real 4xx (bad
+// id, 401 PAT, 404 project) returns immediately — retrying one of those
+// would never succeed anyway.
+const RETRYABLE_STATUS = new Set([429, 502, 503, 504])
+const RETRY_DELAYS_MS = [300, 900]
+
+async function fetchAdoWithRetry(url: string, init: RequestInit): Promise<globalThis.Response> {
+  for (let attempt = 0; ; attempt++) {
+    let res: globalThis.Response
+    try {
+      res = await fetch(url, init)
+    } catch (err) {
+      if (attempt >= RETRY_DELAYS_MS.length) throw err
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]))
+      continue
+    }
+    if (res.ok || !RETRYABLE_STATUS.has(res.status) || attempt >= RETRY_DELAYS_MS.length) return res
+    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]))
+  }
+}
+
 async function findIntegration(organization: string): Promise<AzureDevOpsIntegration | null> {
   const list = await getAzureDevOpsIntegrations()
   return list.find((c) => c.organization === organization) || null
@@ -89,7 +116,7 @@ export async function forwardGetWorkItem(req: Request, res: Response): Promise<v
   }
   const id = req.params.id
   try {
-    const upstream = await fetch(
+    const upstream = await fetchAdoWithRetry(
       `https://dev.azure.com/${config.organization}/${config.project}/_apis/wit/workitems/${id}?api-version=7.1`,
       { headers: { Authorization: authHeader(config.personalAccessToken) } }
     )
