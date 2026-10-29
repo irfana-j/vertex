@@ -69,21 +69,40 @@ if (typeof window !== 'undefined') {
   })
 }
 
+const STATE_LOAD_RETRY_DELAYS_MS = [400, 900, 1800]
+
 const backendStorage: StateStorage = {
   getItem: async () => {
-    const res = await fetch('/api/state', { credentials: 'include' })
+    // A 401 right here, immediately after login, is usually a race rather
+    // than a real auth failure: the login response's Set-Cookie has reached
+    // the browser, but (behind a load balancer fronting more than one
+    // backend instance without session affinity) this very next request can
+    // land on an instance whose in-memory session map hasn't seen that
+    // token yet. A 502/503/504 during a brief backend restart is the same
+    // shape of problem — transient, not "you're not logged in." Retrying a
+    // few times here means the "Loading regression data…" screen just takes
+    // a beat longer instead of flashing a scary error the user has to
+    // manually retry past. Only exhausting every attempt is a real failure.
+    let lastStatus = 0
+    for (let attempt = 0; attempt <= STATE_LOAD_RETRY_DELAYS_MS.length; attempt++) {
+      const res = await fetch('/api/state', { credentials: 'include' })
+      if (res.ok) {
+        const data = await res.json()
+        return JSON.stringify({ state: data, version: STORE_VERSION })
+      }
+      lastStatus = res.status
+      if (attempt < STATE_LOAD_RETRY_DELAYS_MS.length) {
+        await new Promise((resolve) => setTimeout(resolve, STATE_LOAD_RETRY_DELAYS_MS[attempt]))
+      }
+    }
     // The server always returns a valid body on success (DEFAULT_STATE at
-    // worst) — it never legitimately has "no state" — so a non-ok response
-    // here is a real failure (a 401 from a race right after login, a 502
-    // from the backend being briefly down, etc.), not "nothing persisted
-    // yet." Throwing instead of returning null matters: zustand's persist
-    // treats a null getItem as "no data, keep whatever's already in memory"
-    // and still marks hydration as finished successfully — which used to
-    // mean a transient failure here silently left the seed/mock demo data
-    // on screen with no error shown at all.
-    if (!res.ok) throw new Error(`Failed to load state (${res.status})`)
-    const data = await res.json()
-    return JSON.stringify({ state: data, version: STORE_VERSION })
+    // worst) — it never legitimately has "no state" — so getting here means
+    // every retry also failed. Throwing instead of returning null matters:
+    // zustand's persist treats a null getItem as "no data, keep whatever's
+    // already in memory" and still marks hydration as finished successfully
+    // — which used to mean a transient failure here silently left the
+    // seed/mock demo data on screen with no error shown at all.
+    throw new Error(`Failed to load state (${lastStatus})`)
   },
   setItem: async (_name, value) => {
     const { state } = JSON.parse(value) as { state: unknown }
