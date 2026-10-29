@@ -32,6 +32,14 @@ WORKDIR /app
 COPY --from=server-deps /app/node_modules ./node_modules
 COPY --from=server-build /app/dist ./dist
 COPY --from=client-build /app/dist ./client-dist
+# The npm CLI (and corepack) that node:22-alpine ships at this path is never
+# invoked at runtime here — the container only ever runs `node dist/index.js`
+# — but its own vendored dependencies (picomatch, ip-address, brace-expansion,
+# postcss-selector-parser, sigstore, pacote, ...) show up as image CVEs in
+# Inspector/ECR scans regardless. Deleting it removes those findings outright
+# instead of chasing patches for a tool this image doesn't use.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+  /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 ENV CLIENT_DIST=/app/client-dist
 ENV PORT=80
 ENV DB_PATH=/app/data/app.db
