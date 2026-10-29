@@ -35,6 +35,7 @@ export default function App() {
   const authStatus = useAuthStore((s) => s.status)
   const role = useAuthStore((s) => s.role)
   const checkSession = useAuthStore((s) => s.checkSession)
+  const sessionCheckFailed = useAuthStore((s) => s.sessionCheckFailed)
   const logout = useAuthStore((s) => s.logout)
   const syncAllTemplates = useStore((s) => s.syncAllTemplates)
   const syncAllTicketsFromBoard = useStore((s) => s.syncAllTicketsFromBoard)
@@ -125,6 +126,16 @@ export default function App() {
     return () => clearInterval(id)
   }, [hydrated, role])
 
+  if (authStatus === 'checking' && sessionCheckFailed) {
+    return (
+      <div className="hydration-error">
+        <p>Couldn't reach the server to check your session.</p>
+        <button className="btn" onClick={checkSession}>
+          Retry
+        </button>
+      </div>
+    )
+  }
   if (authStatus === 'checking') return <FullScreenMessage text="Loading…" />
   if (authStatus === 'anonymous') return <LoginScreen />
   if (hydrationError) {

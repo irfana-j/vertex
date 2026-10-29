@@ -57,6 +57,18 @@ interface PersistedState {
   groups: RegressionGroup[]
 }
 
+// Tracks in-flight writes to /api/state so a tab refresh/close right after a
+// change can warn before discarding it instead of silently losing it — see
+// the beforeunload listener and backendStorage.setItem below.
+let pendingWriteCount = 0
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', (e) => {
+    if (pendingWriteCount <= 0) return
+    e.preventDefault()
+    e.returnValue = ''
+  })
+}
+
 const backendStorage: StateStorage = {
   getItem: async () => {
     const res = await fetch('/api/state', { credentials: 'include' })
@@ -75,12 +87,29 @@ const backendStorage: StateStorage = {
   },
   setItem: async (_name, value) => {
     const { state } = JSON.parse(value) as { state: unknown }
-    await fetch('/api/state', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify(state),
-    })
+    const body = JSON.stringify(state)
+    pendingWriteCount++
+    try {
+      await fetch('/api/state', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        // Every set() in this store fires this PUT in the background —
+        // nothing awaits it — so a tab refresh right after making a change
+        // can cancel it mid-flight before the server ever sees it; logging
+        // back in then correctly shows the last state the server DID
+        // receive, which looks like "my latest change disappeared." keepalive
+        // tells the browser to finish sending this even if the page is
+        // being unloaded, same mechanism as a beforeunload analytics ping.
+        // It has a hard ~64KB combined-body limit in Chromium (the request
+        // throws synchronously over that), so it's skipped for a large state
+        // blob rather than risk a write silently failing instead of racing.
+        keepalive: body.length < 60_000,
+        body,
+      })
+    } finally {
+      pendingWriteCount--
+    }
   },
   removeItem: async () => {},
 }

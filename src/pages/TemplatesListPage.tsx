@@ -91,6 +91,7 @@ function TrackTemplatePicker({ trackedSymphonyIds, onCancel, onTracked }: TrackT
   const [totalCount, setTotalCount] = useState<number | null>(null)
   const [allTemplateCount, setAllTemplateCount] = useState<number | null>(null)
   const [trackingId, setTrackingId] = useState<string | null>(null)
+  const [trackError, setTrackError] = useState<string | null>(null)
   const [previewId, setPreviewId] = useState<string | null>(null)
 
   const [search, setSearch] = useState('')
@@ -124,9 +125,20 @@ function TrackTemplatePicker({ trackedSymphonyIds, onCancel, onTracked }: TrackT
 
   const handleTrack = async (symphonyTemplateId: string) => {
     setTrackingId(symphonyTemplateId)
-    const localId = await trackSymphonyTemplate(symphonyTemplateId)
-    setTrackingId(null)
-    if (localId) onTracked(localId)
+    setTrackError(null)
+    try {
+      const localId = await trackSymphonyTemplate(symphonyTemplateId)
+      if (localId) onTracked(localId)
+    } catch (err) {
+      // trackSymphonyTemplate can throw partway through (e.g. the Symphony
+      // call that pulls in the first job result) — without this, the thrown
+      // rejection skipped setTrackingId(null) below entirely, leaving the
+      // button stuck on "Tracking…" forever even though the template itself
+      // was already added (that part commits to local state first).
+      setTrackError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setTrackingId(null)
+    }
   }
 
   return (
@@ -142,6 +154,13 @@ function TrackTemplatePicker({ trackedSymphonyIds, onCancel, onTracked }: TrackT
         {totalCount !== null && totalCount !== all.length ? ` of ${totalCount}` : ''} available. Search by id or name to
         find the one you want.
       </p>
+      {trackError && (
+        <div className="not-tracked-note" style={{ marginBottom: 14 }}>
+          Couldn't finish tracking that template: <b>{trackError}</b> It may already be partially tracked — check the
+          templates list, or try again.
+        </div>
+      )}
+
       {allTemplateCount !== null && totalCount !== null && allTemplateCount > totalCount && (
         <p className="not-tracked-note" style={{ marginBottom: 14 }}>
           This account can see {totalCount} of {allTemplateCount} templates in the tenant — the rest aren't visible to
@@ -242,13 +261,23 @@ export default function TemplatesListPage() {
 
   const [picking, setPicking] = useState(false)
   const [syncingId, setSyncingId] = useState<string | null>(null)
+  const [syncError, setSyncError] = useState<string | null>(null)
   const [syncingAll, setSyncingAll] = useState(false)
   const [syncAllFlash, setSyncAllFlash] = useState<string | null>(null)
 
   const handleSync = async (id: string) => {
     setSyncingId(id)
-    await syncJobResults(id)
-    setSyncingId(null)
+    setSyncError(null)
+    try {
+      await syncJobResults(id)
+    } catch (err) {
+      // Same reasoning as handleTrack above — without this, a thrown sync
+      // error (e.g. a Symphony 401) left this card's Sync button stuck
+      // disabled on "Syncing…" forever since setSyncingId(null) never ran.
+      setSyncError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSyncingId(null)
+    }
   }
 
   const handleSyncAll = async () => {
@@ -273,6 +302,7 @@ export default function TemplatesListPage() {
           </p>
         </div>
         <div className="actions">
+          {syncError && <span style={{ fontSize: 12, color: '#c0392b', fontWeight: 600 }}>Sync failed: {syncError}</span>}
           {syncAllFlash && <span style={{ fontSize: 12, color: 'var(--primary-dark)', fontWeight: 600 }}>{syncAllFlash}</span>}
           {isAdmin && templates.length > 0 && (
             <button className="btn small" onClick={handleSyncAll} disabled={syncingAll}>

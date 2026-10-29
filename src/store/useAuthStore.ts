@@ -8,6 +8,14 @@ interface AuthState {
   status: AuthStatus
   role: Role | null
   error: string | null
+  // /api/session itself never 401s — it always returns 200 with role:null
+  // when there's no valid session, so a thrown error from fetchSession()
+  // means the REQUEST failed (an ALB 502/504 during a brief backend
+  // restart, a dropped connection, etc.), not that the session is invalid.
+  // Set only once retries are exhausted, so App.tsx can show a "couldn't
+  // reach the server" retry screen instead of silently falling back to the
+  // login screen and making an idle-timeout-valid session look expired.
+  sessionCheckFailed: boolean
   checkSession: () => Promise<void>
   login: (username: string, password: string) => Promise<boolean>
   logout: () => Promise<void>
@@ -21,14 +29,23 @@ export const useAuthStore = create<AuthState>((set) => ({
   status: 'checking',
   role: null,
   error: null,
+  sessionCheckFailed: false,
 
   checkSession: async () => {
-    try {
-      const { role } = await api.fetchSession()
-      set({ status: role ? 'authenticated' : 'anonymous', role })
-    } catch {
-      set({ status: 'anonymous', role: null })
+    set({ sessionCheckFailed: false })
+    const attempt = async (retriesLeft: number): Promise<void> => {
+      try {
+        const { role } = await api.fetchSession()
+        set({ status: role ? 'authenticated' : 'anonymous', role, sessionCheckFailed: false })
+      } catch {
+        if (retriesLeft > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 600))
+          return attempt(retriesLeft - 1)
+        }
+        set({ sessionCheckFailed: true })
+      }
     }
+    await attempt(2)
   },
 
   login: async (username, password) => {

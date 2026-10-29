@@ -35,18 +35,28 @@ type RawApiResponse = any
 interface JwtPayload {
   roles?: string[]
   user_name?: string
+  // Standard JWT "expires at," seconds since epoch — present on every real
+  // Symphony token observed so far. When it's there, it's the actual source
+  // of truth for freshness instead of the guessed TOKEN_TTL_MS fallback.
+  exp?: number
   [key: string]: unknown
 }
 
 // Token exchange: POST { customerCode, username, password } as JSON to the
 // auth/token endpoint — every real Symphony call (templates, job sync,
 // everything) goes through this first. Caches the result in memory only
-// (never persisted) and re-fetches once it's older than TOKEN_TTL_MS —
-// adjust that TTL once the real token's actual expiry is confirmed.
+// (never persisted).
 let cachedToken: string | null = null
 let cachedTokenPayload: JwtPayload | null = null
 let cachedTokenAt = 0
+// Fallback only, for the (so-far unseen) case of a token with no decodable
+// `exp` claim — the real expiry from the JWT itself is what normally governs
+// refresh timing now, so this no longer needs tuning against Symphony's
+// actual session length.
 const TOKEN_TTL_MS = 25 * 60 * 1000
+// Refresh a bit before the token's real expiry rather than right at it, so
+// an in-flight request started just before `exp` doesn't land after it.
+const TOKEN_REFRESH_MARGIN_MS = 60 * 1000
 
 // Symphony's token is a JWT — decoding its payload (no verification, it's
 // not secret, just base64) is how the app recovers the logged-in user's
@@ -61,10 +71,29 @@ function decodeJwtPayload(token: string): JwtPayload | null {
   }
 }
 
+function isCachedTokenFresh(): boolean {
+  if (!cachedToken) return false
+  const exp = cachedTokenPayload?.exp
+  if (typeof exp === 'number') return Date.now() < exp * 1000 - TOKEN_REFRESH_MARGIN_MS
+  return Date.now() - cachedTokenAt < TOKEN_TTL_MS
+}
+
+// Forces the next getSymphonyBearerToken() call to exchange a brand-new
+// token instead of trusting the cache — used when Symphony rejects a
+// request with 401 even though the cache still looked fresh (clock skew,
+// the token being revoked early on Symphony's side, etc.), so that one
+// unexpected 401 can self-heal with a retry instead of surfacing as an
+// error the user has to "fix" with an unrelated full page reload.
+function invalidateSymphonyToken() {
+  cachedToken = null
+  cachedTokenPayload = null
+  cachedTokenAt = 0
+}
+
 async function getSymphonyBearerToken(): Promise<string | null> {
   if (SYMPHONY_API_TOKEN) return SYMPHONY_API_TOKEN
   if (!SYMPHONY_TOKEN_URL) return null
-  if (cachedToken && Date.now() - cachedTokenAt < TOKEN_TTL_MS) return cachedToken
+  if (isCachedTokenFresh()) return cachedToken
   // No credentials in the body — the server fills those in from its own
   // env vars (see server/src/symphonyProxy.ts) regardless of what's sent.
   const res = await fetch(SYMPHONY_TOKEN_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
@@ -89,7 +118,6 @@ type QueryValue = string | number | boolean | string[]
 // confirmed from a real captured request; Symphony's API expects the raw
 // token there, not the usual "Bearer <token>" form.
 async function symphonyGet(path: string, query?: Record<string, QueryValue>): Promise<RawApiResponse> {
-  const token = await getSymphonyBearerToken()
   // The base might be a same-origin proxy path (e.g. "/api/symphony-dnd") rather
   // than an absolute URL — the second arg here resolves that case and is
   // ignored when SYMPHONY_BASE_URL is already absolute.
@@ -100,9 +128,21 @@ async function symphonyGet(path: string, query?: Record<string, QueryValue>): Pr
       else url.searchParams.set(k, String(v))
     })
   }
-  const headers: Record<string, string> = { Accept: 'application/json' }
-  if (token) headers.Authorization = token
-  const res = await fetch(url, { headers })
+  const doFetch = async (): Promise<Response> => {
+    const token = await getSymphonyBearerToken()
+    const headers: Record<string, string> = { Accept: 'application/json' }
+    if (token) headers.Authorization = token
+    return fetch(url, { headers })
+  }
+  let res = await doFetch()
+  if (res.status === 401 && cachedToken) {
+    // The cached token looked fresh but Symphony rejected it anyway — force
+    // one real token exchange and retry before giving up, so this can
+    // recover on its own instead of needing a full page reload (which only
+    // "fixes" it by coincidentally resetting the in-memory token cache).
+    invalidateSymphonyToken()
+    res = await doFetch()
+  }
   if (!res.ok) throw new Error(`Symphony GET ${path} failed: ${res.status}`)
   return res.json()
 }
