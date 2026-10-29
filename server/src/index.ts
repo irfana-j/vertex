@@ -16,23 +16,36 @@ app.use(express.json({ limit: '10mb' }))
 const PORT = Number(process.env.PORT) || 4001
 const CLIENT_DIST = process.env.CLIENT_DIST || path.join(__dirname, '../../dist')
 
-app.post('/api/login', (req, res) => {
-  const username = String(req.body?.username ?? '')
-  const password = String(req.body?.password ?? '')
-  const result = login(username, password)
-  if (!result) return res.status(401).json({ error: 'Incorrect username or password' })
-  setSessionCookie(res, result.token)
-  res.json({ role: result.role })
+app.post('/api/login', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '')
+    const password = String(req.body?.password ?? '')
+    const result = await login(username, password)
+    if (!result) return res.status(401).json({ error: 'Incorrect username or password' })
+    setSessionCookie(res, result.token)
+    res.json({ role: result.role })
+  } catch (err) {
+    next(err)
+  }
 })
 
-app.post('/api/logout', (req, res) => {
-  logout(getSessionToken(req))
-  clearSessionCookie(res)
-  res.json({ ok: true })
+app.post('/api/logout', async (req, res, next) => {
+  try {
+    await logout(getSessionToken(req))
+    clearSessionCookie(res)
+    res.json({ ok: true })
+  } catch (err) {
+    next(err)
+  }
 })
 
-app.get('/api/session', (req, res) => {
-  res.json({ role: getSessionFromRequest(req)?.role ?? null })
+app.get('/api/session', async (req, res, next) => {
+  try {
+    const session = await getSessionFromRequest(req)
+    res.json({ role: session?.role ?? null })
+  } catch (err) {
+    next(err)
+  }
 })
 
 // GET is readable by either role; PUT (replacing the whole saved state) is

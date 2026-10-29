@@ -184,7 +184,7 @@ export function daysSinceActivity(ticket: Ticket): number | null {
   return Math.floor((Date.now() - ticket.lastActivityAt) / day)
 }
 
-export function computeDashboard(templates: Template[], _cycles: Cycle[], activeCycleId: string): DashboardSummary {
+export function computeDashboard(templates: Template[], _cycles: Cycle[], activeCycleId: string, groups: RegressionGroup[]): DashboardSummary {
   const tracked = templates.filter(isRegressionTemplate)
 
   const rows: DashboardRow[] = tracked.map((t) => {
@@ -202,7 +202,7 @@ export function computeDashboard(templates: Template[], _cycles: Cycle[], active
     return {
       id: t.id,
       name: t.symphonyTemplateName,
-      group: getTemplateGroup(t),
+      groupNames: groups.filter((g) => g.templateIds.includes(t.id)).map((g) => g.name),
       owner: meta.owner,
       labels: meta.labels,
       totalNodes,
@@ -242,12 +242,11 @@ export function computeDashboard(templates: Template[], _cycles: Cycle[], active
   const openTickets = allTickets.filter(isTicketOpen)
   const staleTickets = openTickets.filter(isTicketStale)
 
-  // Groups come entirely from what Symphony put on the tracked templates
-  // — never a fixed cloud list, so a project-based group shows up here
-  // exactly like a cloud one would. Only used for the "All templates"
-  // table's own group filter now — cumulative progress by group is the
-  // user-defined groups feature (computeCustomGroupDashboard) instead.
-  const groups = [...new Set(rows.map((r) => r.group))].sort()
+  // The "All templates" table's own group filter mirrors the app's
+  // user-defined groups (same ones computeCustomGroupDashboard rolls up) —
+  // every created group appears here, even an empty one, not just groups
+  // that happen to have a tracked template in them right now.
+  const groupNames = groups.map((g) => g.name).sort()
 
   return {
     rows,
@@ -263,7 +262,7 @@ export function computeDashboard(templates: Template[], _cycles: Cycle[], active
     openTicketsCount: openTickets.length,
     staleTicketsCount: staleTickets.length,
     allTickets,
-    groups,
+    groups: groupNames,
   }
 }
 

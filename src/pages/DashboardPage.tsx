@@ -124,7 +124,7 @@ export default function DashboardPage() {
   // rather than leaving the dashboard stuck looking at what's now history.
   useEffect(() => setSelectedCycleId(activeCycleId), [activeCycleId])
 
-  const dash = computeDashboard(templates, cycles, selectedCycleId || '')
+  const dash = computeDashboard(templates, cycles, selectedCycleId || '', groups)
   const groupDash = computeCustomGroupDashboard(templates, groups, selectedCycleId || '')
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null)
   const cycleTrend = computeCycleTrend(templates, cycles)
@@ -151,7 +151,7 @@ export default function DashboardPage() {
     const q = search.trim().toLowerCase()
     return dash.rows.filter((r) => {
       if (q && !r.name.toLowerCase().includes(q)) return false
-      if (groupFilter !== 'All' && r.group !== groupFilter) return false
+      if (groupFilter !== 'All' && !r.groupNames.includes(groupFilter)) return false
       if (statusFilter !== 'All' && r.status !== statusFilter) return false
       return true
     })
@@ -546,10 +546,18 @@ export default function DashboardPage() {
                     {r.flaky && <span className="flaky-tag">⚠ flaky</span>}
                   </td>
                   <td>
-                    <span className="cloud-chip">
-                      <span className="cloud-dot" style={{ background: getGroupColor(r.group) }} />
-                      {r.group}
-                    </span>
+                    <div className="uc-tags">
+                      {r.groupNames.length ? (
+                        r.groupNames.map((name) => (
+                          <span className="cloud-chip" key={name}>
+                            <span className="cloud-dot" style={{ background: getGroupColor(name) }} />
+                            {name}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="uc-tag">Ungrouped</span>
+                      )}
+                    </div>
                   </td>
                   <td>
                     <div className="uc-tags">

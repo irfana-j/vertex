@@ -201,7 +201,7 @@ export interface TemplateMeta {
 export interface DashboardRow {
   id: string
   name: string
-  group: string
+  groupNames: string[]
   owner: string
   labels: string[]
   totalNodes: number

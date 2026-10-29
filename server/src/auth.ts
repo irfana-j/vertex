@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { parse, serialize } from 'cookie'
 import type { NextFunction, Request, Response } from 'express'
+import * as db from './db.js'
 
 export type Role = 'admin' | 'user'
 
@@ -30,10 +31,10 @@ const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000
 // itself still has left.
 const COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
-// In-memory — a restart logs everyone out, which is a fine trade-off for
-// two people on an internal tool. Real credentials never touch the DB;
-// they're only ever compared against env vars set on the server.
-const sessions = new Map<string, { role: Role; lastActivityAt: number }>()
+// Sessions live in Postgres (see db.ts) rather than an in-memory Map — this
+// app runs behind an ALB, and an in-process Map is only visible to the one
+// instance that happens to handle a given request. Real credentials never
+// touch the DB; they're only ever compared against env vars set on the server.
 
 // ADMIN_PASSWORD / USER_PASSWORD are expected base64-encoded (e.g.
 // `echo -n 'the real password' | base64`) rather than plain text — this is
@@ -65,35 +66,35 @@ function userUsername() {
   return process.env.USER_USERNAME || 'user'
 }
 
-export function login(username: string, password: string): { token: string; role: Role } | null {
+export async function login(username: string, password: string): Promise<{ token: string; role: Role } | null> {
   let role: Role | null = null
   if (adminPassword() && username === adminUsername() && password === adminPassword()) role = 'admin'
   else if (userPassword() && username === userUsername() && password === userPassword()) role = 'user'
   if (!role) return null
   const token = randomBytes(24).toString('hex')
-  sessions.set(token, { role, lastActivityAt: Date.now() })
+  await db.createSession(token, role)
   return { token, role }
 }
 
-export function logout(token: string | undefined) {
-  if (token) sessions.delete(token)
+export async function logout(token: string | undefined) {
+  if (token) await db.deleteSession(token)
 }
 
 export function getSessionToken(req: Request): string | undefined {
   return parse(req.headers.cookie || '')[SESSION_COOKIE]
 }
 
-function getSession(req: Request): { role: Role } | null {
+async function getSession(req: Request): Promise<{ role: Role } | null> {
   const token = getSessionToken(req)
   if (!token) return null
-  const session = sessions.get(token)
+  const session = await db.getSession(token)
   if (!session) return null
   if (Date.now() - session.lastActivityAt > SESSION_IDLE_TIMEOUT_MS) {
-    sessions.delete(token)
+    await db.deleteSession(token)
     return null
   }
-  session.lastActivityAt = Date.now()
-  return { role: session.role }
+  await db.touchSession(token)
+  return { role: session.role as Role }
 }
 
 export function getSessionFromRequest(req: Request) {
@@ -116,17 +117,25 @@ export function clearSessionCookie(res: Response) {
   res.setHeader('Set-Cookie', serialize(SESSION_COOKIE, '', { httpOnly: true, path: '/', maxAge: 0 }))
 }
 
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const session = getSession(req)
-  if (!session) return res.status(401).json({ error: 'Not logged in' })
-  req.role = session.role
-  next()
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
+  try {
+    const session = await getSession(req)
+    if (!session) return res.status(401).json({ error: 'Not logged in' })
+    req.role = session.role
+    next()
+  } catch (err) {
+    next(err)
+  }
 }
 
-export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  const session = getSession(req)
-  if (!session) return res.status(401).json({ error: 'Not logged in' })
-  if (session.role !== 'admin') return res.status(403).json({ error: 'Admin access required' })
-  req.role = session.role
-  next()
+export async function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  try {
+    const session = await getSession(req)
+    if (!session) return res.status(401).json({ error: 'Not logged in' })
+    if (session.role !== 'admin') return res.status(403).json({ error: 'Admin access required' })
+    req.role = session.role
+    next()
+  } catch (err) {
+    next(err)
+  }
 }
