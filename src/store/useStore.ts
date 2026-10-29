@@ -4,6 +4,7 @@ import { uid } from '../lib/id'
 import { createNode, createEdge } from '../lib/nodeFactory'
 import { autoLayout } from '../lib/layout'
 import { getSymphonyTemplate, listJobsForTemplate, getJobDetail } from '../lib/symphonyConnector'
+import { resolveCycleForTimestamp } from '../lib/selectors'
 import { getTicketStatus, postFollowUpComment, ticketUrl } from '../lib/devopsConnector'
 import { createSeedData } from './seed'
 import type {
@@ -48,7 +49,7 @@ async function mapWithConcurrency<T, R>(items: T[], concurrency: number, fn: (it
 // and persist's own setItem call (triggered by that `set()`) is what pushes
 // the result to the backend. A viewer's PUT gets rejected (403, admin-only)
 // server-side — enforced there, not just by hiding buttons in the UI.
-const STORE_VERSION = 5
+const STORE_VERSION = 6
 
 interface PersistedState {
   templates: Template[]
@@ -432,7 +433,7 @@ export const useStore = create<StoreState>()(
         let jobs = await listJobsForTemplate(template.symphonyTemplateId)
         if (limit) jobs = jobs.slice(0, limit)
         const existingById = new Map(template.runHistory.map((r) => [r.id, r]))
-        const activeCycleId = get().activeCycleId
+        const cycles = get().cycles
 
         // A run already captured mid-execution (overallStatus not yet
         // Success/Failed) is NOT done — Symphony keeps going after that
@@ -475,7 +476,14 @@ export const useStore = create<StoreState>()(
             id: job.jobId,
             timestamp: job.finishedAt,
             overallStatus: job.status,
-            cycleId: existing?.cycleId ?? activeCycleId ?? '',
+            // Driven by when the job actually finished, not frozen at
+            // whichever cycle was active the first time this app noticed
+            // it — a job still Awaiting/On Hold when first synced used to
+            // stay pinned to that stale cycle forever even once it
+            // completed well into a later one. Recomputed on every sync a
+            // non-terminal run goes through (see isGenuinelyDone below), so
+            // it naturally lands in the right cycle once it's actually done.
+            cycleId: resolveCycleForTimestamp(cycles, job.finishedAt),
             results: detail.steps || {},
             // Real Symphony status text per node (e.g. "Running", "Planned")
             // for nodes that aren't pass/fail yet — lets the UI show what's
@@ -680,8 +688,31 @@ export const useStore = create<StoreState>()(
         // Pre-v5 templates had no per-node/group model and tickets had no
         // board url or activity timestamp — that shape doesn't reconcile
         // with this one, so start clean rather than trying to reshape it.
-        if (version < 5) return { templates: seed.templates, cycles: seed.cycles, activeCycleId: seed.activeCycleId, groups: [] }
-        return persisted as PersistedState
+        let state: PersistedState =
+          version < 5
+            ? { templates: seed.templates, cycles: seed.cycles, activeCycleId: seed.activeCycleId, groups: [] }
+            : (persisted as PersistedState)
+        // v6: every run's cycleId used to get locked in the first time this
+        // app ever saw that job id, even if the job was still
+        // Awaiting/Planned/On Hold back then — a job that only finished
+        // after a new cycle had already started stayed stuck counting
+        // toward the old, closed cycle forever. Re-derive every run's
+        // cycleId from its own finish timestamp against each cycle's real
+        // time window instead, once, so existing history lines up too
+        // (going forward, syncJobResults does this on every sync already).
+        if (version < 6) {
+          state = {
+            ...state,
+            templates: state.templates.map((t) => ({
+              ...t,
+              runHistory: (t.runHistory || []).map((r) => ({
+                ...r,
+                cycleId: resolveCycleForTimestamp(state.cycles, r.timestamp),
+              })),
+            })),
+          }
+        }
+        return state
       },
     }
   )

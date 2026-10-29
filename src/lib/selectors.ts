@@ -67,6 +67,23 @@ export function getRunsInCycle(template: Template, cycleId: string): Run[] {
   return (template.runHistory || []).filter((r) => r.cycleId === cycleId)
 }
 
+// startNewCycle() always stamps the outgoing cycle's closedAt with the same
+// moment the new cycle's startedAt is set, so cycles form one contiguous
+// timeline with no gaps — every instant after the first cycle began falls
+// inside exactly one cycle's [startedAt, closedAt) window. Used to derive a
+// run's cycle from when the job actually finished, instead of whichever
+// cycle happened to be active the first time this app noticed that job
+// (which could be well before it actually completed, if it was still
+// Awaiting/Planned/On Hold at the time).
+export function resolveCycleForTimestamp(cycles: Cycle[], timestamp: number): string {
+  const sorted = [...cycles].sort((a, b) => a.startedAt - b.startedAt)
+  const match = sorted.find((c) => timestamp >= c.startedAt && (c.closedAt === null || timestamp < c.closedAt))
+  // A timestamp from before the very first cycle existed (seed/import data,
+  // or clock skew) has no real window to belong to — fall back to the
+  // earliest cycle rather than leaving it unassigned.
+  return match?.id ?? sorted[0]?.id ?? ''
+}
+
 export function getExecutedCount(template: Template, cycleId: string): number {
   return getRunsInCycle(template, cycleId).length
 }
