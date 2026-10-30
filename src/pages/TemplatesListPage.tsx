@@ -10,7 +10,7 @@ import {
   getTemplateMeta,
   getStatus,
   isFlaky,
-  getTicketsForTemplateInCycle,
+  getTicketsForTemplate,
   isTicketOpen,
   isRegressionTemplate,
   getLatestRunOverall,
@@ -251,6 +251,7 @@ function TrackTemplatePicker({ trackedSymphonyIds, onCancel, onTracked }: TrackT
 
 export default function TemplatesListPage() {
   const templates = useStore((s) => s.templates)
+  const teams = useStore((s) => s.teams)
   const cycles = useStore((s) => s.cycles)
   const activeCycleId = useStore((s) => s.activeCycleId)
   const syncJobResults = useStore((s) => s.syncJobResults)
@@ -334,11 +335,12 @@ export default function TemplatesListPage() {
         <div className="tpl-grid">
           {templates.map((t) => {
             const group = getTemplateGroup(t)
+            const teamName = t.teamId ? teams.find((tm) => tm.id === t.teamId)?.name ?? null : null
             const meta = getTemplateMeta(t)
             const status = getStatus(t, activeCycleId || '')
             const flaky = isFlaky(t)
             const tracked = isRegressionTemplate(t)
-            const openTickets = getTicketsForTemplateInCycle(t, activeCycleId || '').filter(isTicketOpen)
+            const openTickets = getTicketsForTemplate(t).filter(isTicketOpen)
             const latestRun = getLatestRunOverall(t)
 
             return (
@@ -355,6 +357,12 @@ export default function TemplatesListPage() {
                         <span className="cloud-chip">
                           <span className="cloud-dot" style={{ background: getGroupColor(group) }} />
                           {group}
+                        </span>
+                      )}
+                      {teamName && (
+                        <span className="cloud-chip" title="Team">
+                          <span className="cloud-dot" style={{ background: getGroupColor(teamName) }} />
+                          {teamName}
                         </span>
                       )}
                       <span className="symphony-pick-id">{t.symphonyTemplateId}</span>

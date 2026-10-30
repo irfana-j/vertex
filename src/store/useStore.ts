@@ -5,7 +5,7 @@ import { createNode, createEdge } from '../lib/nodeFactory'
 import { autoLayout } from '../lib/layout'
 import { getSymphonyTemplate, listJobsForTemplate, getJobDetail } from '../lib/symphonyConnector'
 import { resolveCycleForTimestamp } from '../lib/selectors'
-import { getTicketStatus, postFollowUpComment, ticketUrl } from '../lib/devopsConnector'
+import { createAzureDevOpsWorkItem, getTicketStatus, postFollowUpComment, ticketUrl } from '../lib/devopsConnector'
 import { createSeedData } from './seed'
 import type {
   Cycle,
@@ -13,10 +13,13 @@ import type {
   FlowEdge,
   FlowNode,
   NewTicketInput,
+  RaiseTicketInput,
   RegressionGroup,
   Run,
   SymphonyTemplateDetail,
+  Team,
   Template,
+  Ticket,
   TicketStatus,
 } from '../types'
 
@@ -49,13 +52,14 @@ async function mapWithConcurrency<T, R>(items: T[], concurrency: number, fn: (it
 // and persist's own setItem call (triggered by that `set()`) is what pushes
 // the result to the backend. A viewer's PUT gets rejected (403, admin-only)
 // server-side — enforced there, not just by hiding buttons in the UI.
-const STORE_VERSION = 6
+const STORE_VERSION = 7
 
 interface PersistedState {
   templates: Template[]
   cycles: Cycle[]
   activeCycleId: string | null
   groups: RegressionGroup[]
+  teams: Team[]
 }
 
 // Tracks in-flight writes to /api/state so a tab refresh/close right after a
@@ -184,11 +188,20 @@ export interface StoreState {
   // cumulative progress tracking — separate from Symphony's own group
   // field, which is this app's call, not Symphony's.
   groups: RegressionGroup[]
+  // Which team owns each template — a separate, single-pick dimension from
+  // Regression Groups above. Purely organizational: a filter, not an
+  // access boundary — every team's templates stay visible to everyone.
+  teams: Team[]
 
   createGroup: (name: string) => string
   renameGroup: (groupId: string, name: string) => void
   deleteGroup: (groupId: string) => void
   toggleTemplateInGroup: (groupId: string, templateId: string) => void
+
+  createTeam: (name: string) => string
+  renameTeam: (teamId: string, name: string) => void
+  deleteTeam: (teamId: string) => void
+  setTemplateTeam: (templateId: string, teamId: string | null) => void
 
   exportState: (cycleId?: string) => ExportPayload
   importState: (payload: unknown) => ImportResult
@@ -201,6 +214,7 @@ export interface StoreState {
   syncAllTemplates: () => Promise<SyncResult>
 
   logTicket: (templateId: string, ticketData: NewTicketInput) => Promise<void>
+  raiseTicketForNode: (templateId: string, input: RaiseTicketInput, organization: string) => Promise<void>
   updateTicket: (templateId: string, ticketId: string, patch: Partial<{ status: TicketStatus }>) => void
   syncTicketFromBoard: (templateId: string, ticketId: string) => Promise<void>
   syncAllTicketsFromBoard: () => Promise<void>
@@ -217,6 +231,7 @@ export const useStore = create<StoreState>()(
       activeCycleId: seed.activeCycleId,
       lastAutoSyncAt: null,
       groups: [],
+      teams: [],
 
       createGroup: (name) => {
         const newGroup: RegressionGroup = { id: uid('group'), name: name.trim() || 'Untitled group', templateIds: [] }
@@ -241,6 +256,28 @@ export const useStore = create<StoreState>()(
         }))
       },
 
+      createTeam: (name) => {
+        const newTeam: Team = { id: uid('team'), name: name.trim() || 'Untitled team' }
+        set((s) => ({ teams: [...s.teams, newTeam] }))
+        return newTeam.id
+      },
+      renameTeam: (teamId, name) => {
+        const trimmed = name.trim()
+        if (!trimmed) return
+        set((s) => ({ teams: s.teams.map((tm) => (tm.id === teamId ? { ...tm, name: trimmed } : tm)) }))
+      },
+      // Deleting a team doesn't untrack its templates — same reasoning as
+      // deleteGroup — it just clears their team assignment back to none.
+      deleteTeam: (teamId) => {
+        set((s) => ({
+          teams: s.teams.filter((tm) => tm.id !== teamId),
+          templates: s.templates.map((t) => (t.teamId === teamId ? { ...t, teamId: null } : t)),
+        }))
+      },
+      setTemplateTeam: (templateId, teamId) => {
+        set((s) => ({ templates: s.templates.map((t) => (t.id === templateId ? { ...t, teamId } : t)) }))
+      },
+
       // Backup/restore (and the eventual migration path onto a real
       // backend). With no cycleId, this is a full snapshot — every cycle,
       // every tracked template (nodes, run history, tickets), every group —
@@ -249,9 +286,9 @@ export const useStore = create<StoreState>()(
       // shareable slice: every template kept in full (structure), but each
       // one's run history/tickets trimmed to just that cycle.
       exportState: (cycleId) => {
-        const { templates, cycles, activeCycleId, groups } = get()
+        const { templates, cycles, activeCycleId, groups, teams } = get()
         if (!cycleId) {
-          return { kind: 'full', schemaVersion: 1, exportedAt: Date.now(), data: { templates, cycles, activeCycleId, groups } }
+          return { kind: 'full', schemaVersion: 1, exportedAt: Date.now(), data: { templates, cycles, activeCycleId, groups, teams } }
         }
         const cycle = cycles.find((c) => c.id === cycleId)
         const scopedTemplates = templates.map((t) => ({
@@ -259,7 +296,7 @@ export const useStore = create<StoreState>()(
           runHistory: t.runHistory.filter((r) => r.cycleId === cycleId),
           tickets: t.tickets.filter((tk) => tk.cycleId === cycleId),
         }))
-        return { kind: 'cycle', schemaVersion: 1, exportedAt: Date.now(), cycleId, data: { cycle, templates: scopedTemplates, groups } }
+        return { kind: 'cycle', schemaVersion: 1, exportedAt: Date.now(), cycleId, data: { cycle, templates: scopedTemplates, groups, teams } }
       },
 
       // A "full" export replaces everything outright — the guaranteed-exact
@@ -278,12 +315,13 @@ export const useStore = create<StoreState>()(
         if (!parsed?.data) throw new Error('Not a recognized export file')
 
         if (parsed.kind === 'full') {
-          const { templates, cycles, activeCycleId, groups } = parsed.data as Extract<ExportPayload, { kind: 'full' }>['data']
+          const { templates, cycles, activeCycleId, groups, teams } = parsed.data as Extract<ExportPayload, { kind: 'full' }>['data']
           set({
             templates: templates || [],
             cycles: cycles || [],
             activeCycleId: activeCycleId || cycles?.[0]?.id || null,
             groups: groups || [],
+            teams: teams || [],
           })
           return { mode: 'replace' }
         }
@@ -294,6 +332,23 @@ export const useStore = create<StoreState>()(
         set((s) => {
           const cycles = cycleData.cycle && !s.cycles.some((c) => c.id === cycleData.cycle!.id) ? [...s.cycles, cycleData.cycle] : s.cycles
 
+          // Teams are remapped by name (same reasoning as groups below) before
+          // templates are merged, since each incoming template's teamId needs
+          // to land on the right local team id, not the exporting instance's.
+          const teamByName = new Map(s.teams.map((tm) => [tm.name, tm]))
+          const mergedTeams = [...s.teams]
+          const teamIdRemap = new Map<string, string>()
+          ;(cycleData.teams || []).forEach((incoming) => {
+            const existing = teamByName.get(incoming.name)
+            if (existing) {
+              teamIdRemap.set(incoming.id, existing.id)
+              return
+            }
+            mergedTeams.push(incoming)
+            teamIdRemap.set(incoming.id, incoming.id)
+          })
+          const remapTeamId = (teamId: string | null) => (teamId ? (teamIdRemap.get(teamId) ?? null) : null)
+
           const bySymId = new Map(s.templates.map((t) => [t.symphonyTemplateId, t]))
           const idRemap = new Map<string, string>()
           const mergedTemplates = [...s.templates]
@@ -301,7 +356,7 @@ export const useStore = create<StoreState>()(
           ;(cycleData.templates || []).forEach((incoming) => {
             const existing = bySymId.get(incoming.symphonyTemplateId)
             if (!existing) {
-              mergedTemplates.push(incoming)
+              mergedTemplates.push({ ...incoming, teamId: remapTeamId(incoming.teamId) })
               idRemap.set(incoming.id, incoming.id)
               addedTemplates++
               addedRuns += incoming.runHistory.length
@@ -334,7 +389,7 @@ export const useStore = create<StoreState>()(
             mergedGroups[idx] = { ...existing, templateIds: [...new Set([...existing.templateIds, ...remappedIds])] }
           })
 
-          return { cycles, templates: mergedTemplates, groups: mergedGroups }
+          return { cycles, templates: mergedTemplates, groups: mergedGroups, teams: mergedTeams }
         })
         return { mode: 'merge', addedTemplates, addedRuns }
       },
@@ -365,6 +420,7 @@ export const useStore = create<StoreState>()(
           lastSyncedAt: Date.now(),
           createdAt: Date.now(),
           updatedAt: Date.now(),
+          teamId: null,
         }
         set((s) => ({ templates: [...s.templates, template] }))
         // Pull in just the latest job right away, instead of showing an
@@ -548,6 +604,7 @@ export const useStore = create<StoreState>()(
             const entry = {
               id: newId,
               ...ticketData,
+              nodeId: null,
               cycleId,
               boardState: null,
               url: ticketUrl(ticketData.system, ticketData.ticketId, ticketData.organization),
@@ -567,6 +624,43 @@ export const useStore = create<StoreState>()(
             // can retry, same as any other failed board sync.
           }
         }
+      },
+
+      // Raises a brand-new work item on the board — the "Raise ticket"
+      // button next to a failed node's log. Unlike logTicket (which links
+      // an id that already exists), this creates the ticket on the board
+      // first and only adds it locally once that's confirmed, so a failed
+      // create never leaves a fake, unlinked ticket behind.
+      raiseTicketForNode: async (templateId, input, organization) => {
+        const created = await createAzureDevOpsWorkItem(organization, input.title, input.description)
+        const newId = uid('ticket')
+        set((s) => ({
+          templates: s.templates.map((t) => {
+            if (t.id !== templateId) return t
+            const run = input.runId ? t.runHistory.find((r) => r.id === input.runId) : null
+            const cycleId = run ? run.cycleId : s.activeCycleId || ''
+            const now = Date.now()
+            const entry: Ticket = {
+              id: newId,
+              runId: input.runId,
+              nodeId: input.nodeId,
+              cycleId,
+              ticketId: created.ticketId,
+              system: 'Azure DevOps',
+              organization,
+              severity: 'Medium',
+              status: created.status,
+              boardState: created.boardState,
+              assignee: '',
+              scenario: input.scenario,
+              summary: input.title,
+              url: created.url,
+              lastActivityAt: now,
+              createdAt: now,
+            }
+            return { ...t, tickets: [...(t.tickets || []), entry] }
+          }),
+        }))
       },
 
       updateTicket: (templateId, ticketId, patch) => {
@@ -685,14 +779,20 @@ export const useStore = create<StoreState>()(
       // lastAutoSyncAt is this browser's own observation of when ITS
       // auto-sync last ran, not shared app data — excluded so a viewer's
       // tab doesn't overwrite it with its own (never-running) null.
-      partialize: (s): PersistedState => ({ templates: s.templates, cycles: s.cycles, activeCycleId: s.activeCycleId, groups: s.groups }),
+      partialize: (s): PersistedState => ({
+        templates: s.templates,
+        cycles: s.cycles,
+        activeCycleId: s.activeCycleId,
+        groups: s.groups,
+        teams: s.teams,
+      }),
       migrate: (persisted, version): PersistedState => {
         // Pre-v5 templates had no per-node/group model and tickets had no
         // board url or activity timestamp — that shape doesn't reconcile
         // with this one, so start clean rather than trying to reshape it.
         let state: PersistedState =
           version < 5
-            ? { templates: seed.templates, cycles: seed.cycles, activeCycleId: seed.activeCycleId, groups: [] }
+            ? { templates: seed.templates, cycles: seed.cycles, activeCycleId: seed.activeCycleId, groups: [], teams: [] }
             : (persisted as PersistedState)
         // v6: every run's cycleId used to get locked in the first time this
         // app ever saw that job id, even if the job was still
@@ -712,6 +812,15 @@ export const useStore = create<StoreState>()(
                 cycleId: resolveCycleForTimestamp(state.cycles, r.timestamp),
               })),
             })),
+          }
+        }
+        // v7: Teams — a new, separate grouping dimension from Regression
+        // Groups. Nothing to reshape, just backfill what didn't exist yet.
+        if (version < 7) {
+          state = {
+            ...state,
+            teams: state.teams || [],
+            templates: state.templates.map((t) => ({ ...t, teamId: t.teamId ?? null })),
           }
         }
         return state

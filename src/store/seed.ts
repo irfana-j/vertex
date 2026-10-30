@@ -114,6 +114,7 @@ function trackForSeed({ localId, symphonyTemplateId, cycleId, labels, jobLimit, 
     lastSyncedAt: now,
     createdAt,
     updatedAt: now - day,
+    teamId: null,
   }
 }
 
@@ -155,6 +156,7 @@ export function createSeedData(): SeedData {
   const t1bTicket: Ticket = {
     id: 'ticket_t1b_1',
     runId: multiFailedJobId,
+    nodeId: null,
     cycleId: cid,
     ticketId: 'TCKT-5001',
     system: 'Azure DevOps',
@@ -185,6 +187,7 @@ export function createSeedData(): SeedData {
   const t2Ticket: Ticket = {
     id: 'ticket_t2_1',
     runId: failedJobId,
+    nodeId: null,
     cycleId: cid,
     ticketId: 'TCKT-4821',
     system: 'Jira',
@@ -226,6 +229,7 @@ export function createSeedData(): SeedData {
   const t4Ticket: Ticket = {
     id: 'ticket_t4_1',
     runId: null,
+    nodeId: null,
     cycleId: cid,
     ticketId: 'TCKT-4756',
     system: 'Azure DevOps',

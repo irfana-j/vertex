@@ -6,6 +6,7 @@ import { computeDashboard, computeCustomGroupDashboard, computeCycleTrend, isTic
 import { getGroupColor, TICKET_STATUSES } from '../data/constants'
 import { canSyncFromBoard } from '../lib/devopsConnector'
 import Donut from '../components/dashboard/Donut'
+import TicketForm from '../components/TicketForm'
 import type { CycleTrendPoint, TicketStatus } from '../types'
 
 interface TrendChartProps {
@@ -111,9 +112,11 @@ export default function DashboardPage() {
   const cycles = useStore((s) => s.cycles)
   const activeCycleId = useStore((s) => s.activeCycleId)
   const groups = useStore((s) => s.groups)
+  const teams = useStore((s) => s.teams)
   const deleteGroup = useStore((s) => s.deleteGroup)
   const exportState = useStore((s) => s.exportState)
   const importState = useStore((s) => s.importState)
+  const logTicket = useStore((s) => s.logTicket)
   const updateTicket = useStore((s) => s.updateTicket)
   const syncTicketFromBoard = useStore((s) => s.syncTicketFromBoard)
   const syncAllTicketsFromBoard = useStore((s) => s.syncAllTicketsFromBoard)
@@ -125,7 +128,7 @@ export default function DashboardPage() {
   // rather than leaving the dashboard stuck looking at what's now history.
   useEffect(() => setSelectedCycleId(activeCycleId), [activeCycleId])
 
-  const dash = computeDashboard(templates, cycles, selectedCycleId || '', groups)
+  const dash = computeDashboard(templates, cycles, selectedCycleId || '', groups, teams)
   const groupDash = computeCustomGroupDashboard(templates, groups, selectedCycleId || '')
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null)
   const cycleTrend = computeCycleTrend(templates, cycles)
@@ -143,20 +146,31 @@ export default function DashboardPage() {
 
   const [search, setSearch] = useState('')
   const [groupFilter, setGroupFilter] = useState('All')
+  const [teamFilter, setTeamFilter] = useState('All')
   const [statusFilter, setStatusFilter] = useState('All')
   const [syncingAllTickets, setSyncingAllTickets] = useState(false)
   const [busyTicketId, setBusyTicketId] = useState<string | null>(null)
   const [ticketActionError, setTicketActionError] = useState<string | null>(null)
+  const [openTicketForm, setOpenTicketForm] = useState(false)
+  const [newTicketTemplateId, setNewTicketTemplateId] = useState('')
+  const ticketRollupRef = useRef<HTMLDivElement>(null)
+
+  const handleOpenTicketFormFor = (templateId: string) => {
+    setNewTicketTemplateId(templateId)
+    setOpenTicketForm(true)
+    ticketRollupRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase()
     return dash.rows.filter((r) => {
       if (q && !r.name.toLowerCase().includes(q)) return false
       if (groupFilter !== 'All' && !r.groupNames.includes(groupFilter)) return false
+      if (teamFilter !== 'All' && r.teamName !== teamFilter) return false
       if (statusFilter !== 'All' && r.status !== statusFilter) return false
       return true
     })
-  }, [dash.rows, search, groupFilter, statusFilter])
+  }, [dash.rows, search, groupFilter, teamFilter, statusFilter])
 
   const handleSyncAllTickets = async () => {
     setSyncingAllTickets(true)
@@ -509,6 +523,12 @@ export default function DashboardPage() {
                 <option key={g}>{g}</option>
               ))}
             </select>
+            <select className="ctrl" value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)}>
+              <option>All</option>
+              {dash.teams.map((tm) => (
+                <option key={tm}>{tm}</option>
+              ))}
+            </select>
             <select className="ctrl" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
               <option>All</option>
               <option>Success</option>
@@ -523,6 +543,7 @@ export default function DashboardPage() {
               <tr>
                 <th>Template</th>
                 <th>Group</th>
+                <th>Team</th>
                 <th>Labels</th>
                 <th>Status</th>
                 <th>Nodes</th>
@@ -533,7 +554,7 @@ export default function DashboardPage() {
             <tbody>
               {filteredRows.length === 0 && (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '24px 0' }}>
+                  <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '24px 0' }}>
                     No templates match your filters.
                   </td>
                 </tr>
@@ -559,6 +580,16 @@ export default function DashboardPage() {
                         <span className="uc-tag">Ungrouped</span>
                       )}
                     </div>
+                  </td>
+                  <td>
+                    {r.teamName ? (
+                      <span className="cloud-chip">
+                        <span className="cloud-dot" style={{ background: getGroupColor(r.teamName) }} />
+                        {r.teamName}
+                      </span>
+                    ) : (
+                      <span className="uc-tag">Unassigned</span>
+                    )}
                   </td>
                   <td>
                     <div className="uc-tags">
@@ -597,10 +628,14 @@ export default function DashboardPage() {
                       >
                         {r.ticketCount} total{r.openTicketCount > 0 ? ` · ${r.openTicketCount} open` : ''}
                       </Link>
-                    ) : r.status === 'Failed' ? (
-                      <Link to={`/templates/${r.id}`} className="ticket-link" style={{ background: 'var(--critical-soft)', color: 'var(--critical)' }}>
+                    ) : r.status === 'Failed' && isAdmin ? (
+                      <button
+                        className="ticket-link"
+                        style={{ background: 'var(--critical-soft)', color: 'var(--critical)', border: 'none', cursor: 'pointer' }}
+                        onClick={() => handleOpenTicketFormFor(r.id)}
+                      >
                         + Log ticket
-                      </Link>
+                      </button>
                     ) : (
                       <span className="reason none">—</span>
                     )}
@@ -613,7 +648,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="section">
+      <div className="section" ref={ticketRollupRef}>
         <div className="section-head" style={{ alignItems: 'center' }}>
           <div>
             <span className="eyebrow">Ticket rollup</span>
@@ -621,13 +656,48 @@ export default function DashboardPage() {
             <p>Status syncs live from the board — stays open across cycles until resolved there.</p>
           </div>
           {isAdmin && (
-            <button className="btn small" onClick={handleSyncAllTickets} disabled={syncingAllTickets}>
-              {syncingAllTickets ? 'Syncing…' : '⟳ Sync all from board'}
-            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn small" onClick={() => setOpenTicketForm((v) => !v)}>
+                + Add ticket
+              </button>
+              <button className="btn small" onClick={handleSyncAllTickets} disabled={syncingAllTickets}>
+                {syncingAllTickets ? 'Syncing…' : '⟳ Sync all from board'}
+              </button>
+            </div>
           )}
         </div>
         {ticketActionError && (
           <p style={{ fontSize: 12.5, color: 'var(--critical)', marginBottom: 10 }}>{ticketActionError}</p>
+        )}
+        {openTicketForm && isAdmin && (
+          <div className="card" style={{ padding: 16, marginBottom: 14 }}>
+            <div className="field" style={{ maxWidth: 320, marginBottom: 10 }}>
+              <label>Template</label>
+              <select className="ctrl" value={newTicketTemplateId} onChange={(e) => setNewTicketTemplateId(e.target.value)}>
+                <option value="">Select a template…</option>
+                {dash.rows.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {newTicketTemplateId ? (
+              <TicketForm
+                onCancel={() => {
+                  setOpenTicketForm(false)
+                  setNewTicketTemplateId('')
+                }}
+                onSubmit={(data) => {
+                  logTicket(newTicketTemplateId, { ...data, runId: null })
+                  setOpenTicketForm(false)
+                  setNewTicketTemplateId('')
+                }}
+              />
+            ) : (
+              <p style={{ fontSize: 12, color: 'var(--text-faint)' }}>Pick which template this ticket belongs to first.</p>
+            )}
+          </div>
         )}
         {dash.allTickets.filter(isTicketOpen).length === 0 ? (
           <div className="card empty-state">No open tickets.</div>

@@ -146,6 +146,64 @@ export async function forwardGetWorkItem(req: Request, res: Response): Promise<v
   }
 }
 
+// Azure DevOps renders System.Description as HTML, not plain text — a raw
+// failure log with no escaping would both break on any `<`/`&` in it and
+// collapse every newline into a single run-on line.
+function logToHtml(text: string): string {
+  const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return `<pre>${escaped.replace(/\n/g, '<br/>')}</pre>`
+}
+
+// Creates a brand-new work item on the board — unlike forwardGetWorkItem /
+// forwardPostComment, which both act on a ticket id that already exists.
+// This is what the "Raise ticket" button next to a failed node's log
+// calls: the node's failure log becomes the work item's description, and
+// the board assigns the real ticket id this returns.
+export async function forwardCreateWorkItem(req: Request, res: Response): Promise<void> {
+  const config = await findIntegration(req.params.organization)
+  if (!config || !config.project || !config.personalAccessToken) {
+    res.status(400).json({ error: `Azure DevOps organization "${req.params.organization}" is not configured.` })
+    return
+  }
+  const title = String(req.body?.title ?? '').trim()
+  const description = String(req.body?.description ?? '')
+  if (!title) {
+    res.status(400).json({ error: 'A title is required to raise a ticket.' })
+    return
+  }
+  // 'Bug' exists in every standard Azure DevOps process template (Agile,
+  // Scrum, CMMI) this app is expected to run against.
+  const workItemType = 'Bug'
+  try {
+    const upstream = await fetchAdoWithRetry(
+      `https://dev.azure.com/${config.organization}/${encodeURIComponent(config.project)}/_apis/wit/workitems/$${workItemType}?api-version=7.1`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: authHeader(config.personalAccessToken), 'Content-Type': 'application/json-patch+json' },
+        body: JSON.stringify([
+          { op: 'add', path: '/fields/System.Title', value: title },
+          { op: 'add', path: '/fields/System.Description', value: logToHtml(description) },
+        ]),
+      }
+    )
+    if (!upstream.ok) {
+      const body = await upstream.text().catch(() => '')
+      res.status(upstream.status).json({ error: `Azure DevOps create work item failed: ${upstream.status}${body ? ` — ${body.slice(0, 300)}` : ''}` })
+      return
+    }
+    const data = (await upstream.json()) as { id: number; fields?: { 'System.State'?: string } }
+    const state = data.fields?.['System.State'] || 'New'
+    res.json({
+      ticketId: String(data.id),
+      state,
+      isTerminal: isTerminalAdoState(state),
+      url: workItemUrl(config.organization, String(data.id)),
+    })
+  } catch (err) {
+    res.status(502).json({ error: `Azure DevOps upstream request failed: ${String(err)}` })
+  }
+}
+
 export async function forwardPostComment(req: Request, res: Response): Promise<void> {
   const config = await findIntegration(req.params.organization)
   if (!config || !config.project || !config.personalAccessToken) {

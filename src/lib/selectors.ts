@@ -8,6 +8,7 @@ import type {
   NodeResult,
   RegressionGroup,
   Run,
+  Team,
   Template,
   TemplateMeta,
   Ticket,
@@ -173,17 +174,16 @@ export function getTicketsForTemplate(template: Template): Ticket[] {
   return template.tickets || []
 }
 
-// A ticket logged in a past cycle showing up while looking at the current
-// one is just noise — it was already dealt with (or deliberately left)
-// back then. Scoping by cycle keeps the current view to what's actually
-// relevant now; the ticket itself is never deleted, so selecting that past
-// cycle elsewhere (the dashboard's own cycle picker) still shows it.
-export function getTicketsForTemplateInCycle(template: Template, cycleId: string): Ticket[] {
-  return getTicketsForTemplate(template).filter((t) => t.cycleId === cycleId)
-}
-
 export function getTicketForRun(template: Template, runId: string | number): Ticket | null {
   return (template.tickets || []).find((t) => t.runId === runId) || null
+}
+
+// Scoped to one run AND one node — not just nodeId — so a node that fails
+// again in a later run shows a fresh "Raise ticket" option instead of the
+// old ticket from a run that's since been rerun.
+export function getTicketForNode(template: Template, runId: string | number | null, nodeId: string): Ticket | null {
+  if (runId === null) return null
+  return (template.tickets || []).find((t) => t.runId === runId && t.nodeId === nodeId) || null
 }
 
 export function isTicketOpen(ticket: Ticket): boolean {
@@ -201,14 +201,26 @@ export function daysSinceActivity(ticket: Ticket): number | null {
   return Math.floor((Date.now() - ticket.lastActivityAt) / day)
 }
 
-export function computeDashboard(templates: Template[], _cycles: Cycle[], activeCycleId: string, groups: RegressionGroup[]): DashboardSummary {
+export function computeDashboard(
+  templates: Template[],
+  _cycles: Cycle[],
+  activeCycleId: string,
+  groups: RegressionGroup[],
+  teams: Team[]
+): DashboardSummary {
   const tracked = templates.filter(isRegressionTemplate)
+  const teamById = new Map(teams.map((tm) => [tm.id, tm]))
 
   const rows: DashboardRow[] = tracked.map((t) => {
     const meta = getTemplateMeta(t)
     const lastRun = getLastRun(t, activeCycleId)
     const ticket = lastRun ? getTicketForRun(t, lastRun.id) : null
-    const allTicketsForTemplate = getTicketsForTemplateInCycle(t, activeCycleId)
+    // A ticket raised in an earlier cycle and still unresolved is still a
+    // real open issue against this template — it doesn't vanish just
+    // because a new cycle started. Tickets are scoped to the template they
+    // were raised against, not to whichever cycle happened to be active
+    // when they were logged.
+    const allTicketsForTemplate = getTicketsForTemplate(t)
     const scenarioNodes = getScenarioNodes(t)
     const executedNodeIds = getExecutedScenarioNodeIds(t, activeCycleId)
     const latestResults = getNodeResultsInCycle(t, activeCycleId)
@@ -220,6 +232,7 @@ export function computeDashboard(templates: Template[], _cycles: Cycle[], active
       id: t.id,
       name: t.symphonyTemplateName,
       groupNames: groups.filter((g) => g.templateIds.includes(t.id)).map((g) => g.name),
+      teamName: t.teamId ? teamById.get(t.teamId)?.name ?? null : null,
       owner: meta.owner,
       labels: meta.labels,
       totalNodes,
@@ -254,7 +267,7 @@ export function computeDashboard(templates: Template[], _cycles: Cycle[], active
 
   const allTickets: TicketWithTemplate[] = []
   tracked.forEach((t) => {
-    getTicketsForTemplateInCycle(t, activeCycleId).forEach((tk) => allTickets.push({ ...tk, templateId: t.id, templateName: t.symphonyTemplateName }))
+    getTicketsForTemplate(t).forEach((tk) => allTickets.push({ ...tk, templateId: t.id, templateName: t.symphonyTemplateName }))
   })
   const openTickets = allTickets.filter(isTicketOpen)
   const staleTickets = openTickets.filter(isTicketStale)
@@ -264,6 +277,9 @@ export function computeDashboard(templates: Template[], _cycles: Cycle[], active
   // every created group appears here, even an empty one, not just groups
   // that happen to have a tracked template in them right now.
   const groupNames = groups.map((g) => g.name).sort()
+  // Same reasoning as groupNames — every created team appears in the
+  // filter, even one with no tracked template assigned to it yet.
+  const teamNames = teams.map((tm) => tm.name).sort()
 
   return {
     rows,
@@ -280,6 +296,7 @@ export function computeDashboard(templates: Template[], _cycles: Cycle[], active
     staleTicketsCount: staleTickets.length,
     allTickets,
     groups: groupNames,
+    teams: teamNames,
   }
 }
 

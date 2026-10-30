@@ -1,12 +1,14 @@
 import { CLOUD_COLOR } from '../data/constants'
-import { getLatestNodeResults } from '../lib/selectors'
+import { getLatestRunOverall, getTicketForNode } from '../lib/selectors'
+import RaiseTicketButton from './RaiseTicketButton'
 import type { Template } from '../types'
 
 // A plain list of this template's actual Symphony structure — every node,
 // read-only, with its latest pass/fail and log inline. Replaces a
 // drag-and-drop canvas with something you can just scan.
 export default function NodeList({ template }: { template: Template }) {
-  const latest = getLatestNodeResults(template)
+  const latestRun = getLatestRunOverall(template)
+  const latest = latestRun?.results || {}
   const structuralNodes = template.nodes.filter((n) => n.type !== 'regressionInfo')
 
   return (
@@ -36,6 +38,16 @@ export default function NodeList({ template }: { template: Template }) {
                   <>
                     {result.reason && <div className="node-result-reason">{result.reason}</div>}
                     <pre className="node-result-log">{result.log || 'No log captured for this failure.'}</pre>
+                    <RaiseTicketButton
+                      templateId={template.id}
+                      templateName={template.symphonyTemplateName}
+                      runId={latestRun?.id ?? null}
+                      nodeId={n.id}
+                      scenario={n.data.operation || n.data.label}
+                      reason={result.reason}
+                      log={result.log}
+                      existingTicket={getTicketForNode(template, latestRun?.id ?? null, n.id)}
+                    />
                   </>
                 )}
               </div>

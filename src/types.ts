@@ -59,6 +59,12 @@ export type TicketSystem = 'Jira' | 'Azure DevOps'
 export interface Ticket {
   id: string
   runId: string | number | null
+  // Which scenario node this ticket was raised against (from the "Raise
+  // ticket" button next to a failed node's log), or null for a ticket
+  // logged without one — a general/backlog item, or one from before this
+  // existed. Paired with runId (not stored alone) so a node that fails
+  // again in a later run isn't mistaken for still having the old ticket.
+  nodeId: string | null
   cycleId: string
   ticketId: string
   system: TicketSystem
@@ -101,6 +107,25 @@ export interface NewTicketInput {
   runId: string | number | null
 }
 
+// What the "Raise ticket" button next to a failed node hands the store's
+// raiseTicketForNode action — this creates a brand-new work item on the
+// board itself (unlike NewTicketInput, which just links an id that already
+// exists there), so there's no ticketId yet; the board assigns one.
+export interface RaiseTicketInput {
+  runId: string | number | null
+  nodeId: string | null
+  scenario: string | null
+  title: string
+  description: string
+}
+
+export interface CreatedWorkItem {
+  ticketId: string
+  status: TicketStatus
+  boardState: string
+  url: string
+}
+
 export interface Template {
   id: string
   symphonyTemplateId: string
@@ -117,6 +142,17 @@ export interface Template {
   lastSyncedAt: number
   createdAt: number
   updatedAt: number
+  // Which team owns this template — this app's own high-level grouping,
+  // separate from Regression Groups (which are ad hoc, many-to-many sets
+  // like "Azure rollout"). A template belongs to at most one team, and
+  // this is purely organizational: it's a filter, not an access boundary —
+  // every team's templates stay visible to everyone.
+  teamId: string | null
+}
+
+export interface Team {
+  id: string
+  name: string
 }
 
 export interface Cycle {
@@ -211,6 +247,7 @@ export interface DashboardRow {
   id: string
   name: string
   groupNames: string[]
+  teamName: string | null
   owner: string
   labels: string[]
   totalNodes: number
@@ -250,6 +287,7 @@ export interface DashboardSummary {
   staleTicketsCount: number
   allTickets: TicketWithTemplate[]
   groups: string[]
+  teams: string[]
 }
 
 export interface GroupDashboardTemplateRow {
@@ -293,6 +331,7 @@ export interface FullExportPayload {
     cycles: Cycle[]
     activeCycleId: string | null
     groups: RegressionGroup[]
+    teams: Team[]
   }
 }
 
@@ -305,6 +344,7 @@ export interface CycleExportPayload {
     cycle?: Cycle
     templates: Template[]
     groups: RegressionGroup[]
+    teams: Team[]
   }
 }
 

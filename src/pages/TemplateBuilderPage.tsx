@@ -3,6 +3,7 @@ import { useNavigate, useParams, Link } from 'react-router-dom'
 import { useStore } from '../store/useStore'
 import { useAuthStore } from '../store/useAuthStore'
 import TemplateGroupPicker from '../components/TemplateGroupPicker'
+import TemplateTeamPicker from '../components/TemplateTeamPicker'
 import NodeList from '../components/NodeList'
 import RunHistoryPanel from '../components/RunHistoryPanel'
 import { getRegressionNode, getScenarioNodes, getExecutedScenarioNodeIds, getLatestRunOverall } from '../lib/selectors'
@@ -29,10 +30,6 @@ export default function TemplateBuilderPage() {
   const refreshTemplateStructure = useStore((s) => s.refreshTemplateStructure)
   const syncJobResults = useStore((s) => s.syncJobResults)
   const deleteTemplate = useStore((s) => s.deleteTemplate)
-  const logTicket = useStore((s) => s.logTicket)
-  const updateTicket = useStore((s) => s.updateTicket)
-  const syncTicketFromBoard = useStore((s) => s.syncTicketFromBoard)
-  const followUpOnTicket = useStore((s) => s.followUpOnTicket)
   const isAdmin = useAuthStore((s) => s.role === 'admin')
 
   const [syncing, setSyncing] = useState(false)
@@ -166,19 +163,12 @@ export default function TemplateBuilderPage() {
       )}
 
       <div className="builder-stack">
+        <TemplateTeamPicker templateId={template.id} />
         <TemplateGroupPicker templateId={template.id} />
         <NodeList template={template} />
       </div>
 
-      <RunHistoryPanel
-        template={template}
-        cycles={cycles}
-        activeCycleId={activeCycleId}
-        onLogTicket={logTicket}
-        onUpdateTicket={updateTicket}
-        onSyncTicket={syncTicketFromBoard}
-        onFollowUp={followUpOnTicket}
-      />
+      <RunHistoryPanel template={template} cycles={cycles} activeCycleId={activeCycleId} />
     </div>
   )
 }

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { getState, setState, type AppState } from './db.js'
 import { clearSessionCookie, getSessionFromRequest, getSessionToken, login, logout, requireAdmin, requireAuth, setSessionCookie } from './auth.js'
 import { proxySymphonyAuth, proxySymphonyDnd } from './symphonyProxy.js'
-import { deleteIntegration, forwardGetWorkItem, forwardPostComment, listIntegrations, upsertIntegration, testConnection } from './azureDevOps.js'
+import { deleteIntegration, forwardCreateWorkItem, forwardGetWorkItem, forwardPostComment, listIntegrations, upsertIntegration, testConnection } from './azureDevOps.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -96,6 +96,9 @@ app.post('/api/integrations/azuredevops/test', requireAdmin, async (req, res) =>
 // UI already gates that button.
 app.get('/api/azuredevops/:organization/workitems/:id', requireAuth, forwardGetWorkItem)
 app.post('/api/azuredevops/:organization/workitems/:id/comment', requireAdmin, forwardPostComment)
+// Raises a brand-new work item on the board — the "Raise ticket" button
+// next to a failed node's log. Write action, so admin-only like the rest.
+app.post('/api/azuredevops/:organization/workitems', requireAdmin, forwardCreateWorkItem)
 
 app.use(express.static(CLIENT_DIST))
 app.get('*', (_req, res) => {

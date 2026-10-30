@@ -1,4 +1,4 @@
-import type { AzureDevOpsIntegrationEntry, FollowUpResult, TicketBoardStatus, TicketStatus, TicketSystem } from '../types'
+import type { AzureDevOpsIntegrationEntry, CreatedWorkItem, FollowUpResult, TicketBoardStatus, TicketStatus, TicketSystem } from '../types'
 
 // Stands in for the DevOps board's REST API (Azure DevOps Boards / Jira —
 // whichever `system` a ticket names).
@@ -123,6 +123,31 @@ async function getAzureDevOpsWorkItemStatus(organization: string, ticketId: stri
     assignee: data.assignee,
     summary: data.title,
     lastActivityAt: data.lastActivityAt,
+    url: data.url,
+  }
+}
+
+// Creates a brand-new work item on the board — the "Raise ticket" button
+// next to a failed node's log calls this (never against Jira, which this
+// app only reads from — see the module comment above). New tickets start
+// 'Open' since a work item has just been created on the board, not
+// resolved there.
+export async function createAzureDevOpsWorkItem(organization: string, title: string, description: string): Promise<CreatedWorkItem> {
+  const res = await fetch(`/api/azuredevops/${encodeURIComponent(organization)}/workitems`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ title, description }),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null
+    throw new Error(body?.error || `Failed to raise Azure DevOps ticket (${res.status})`)
+  }
+  const data = (await res.json()) as { ticketId: string; state: string; isTerminal: boolean; url: string }
+  return {
+    ticketId: data.ticketId,
+    status: nextStatusFromBoard(data.isTerminal, 'Open'),
+    boardState: data.state,
     url: data.url,
   }
 }
