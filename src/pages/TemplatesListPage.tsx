@@ -298,8 +298,9 @@ export default function TemplatesListPage() {
         <div>
           <h1>Templates</h1>
           <p>
-            Built and run in Symphony — this app tracks their regression metadata and job history. Status below is for
-            the <b>{activeCycle?.label}</b> cycle only.
+            Built and run in Symphony — this app tracks their regression metadata and job history. <b>{templates.length}</b>{' '}
+            template{templates.length === 1 ? '' : 's'} tracked. Status below is for the <b>{activeCycle?.label}</b> cycle
+            only.
           </p>
         </div>
         <div className="actions">

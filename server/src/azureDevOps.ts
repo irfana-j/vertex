@@ -171,34 +171,47 @@ export async function forwardCreateWorkItem(req: Request, res: Response): Promis
     res.status(400).json({ error: 'A title is required to raise a ticket.' })
     return
   }
-  // 'Bug' exists in every standard Azure DevOps process template (Agile,
-  // Scrum, CMMI) this app is expected to run against.
-  const workItemType = 'Bug'
+  // 'Bug' is the usual default, but not every process template defines it
+  // (the Basic process calls it 'Issue' instead, and some custom processes
+  // rename or drop it entirely) — confirmed in practice as a real
+  // "VS402323: Work item type Bug does not exist in project ..." failure,
+  // not a hypothetical. Try the common names in order, only moving to the
+  // next one when the failure specifically means "no such type here" —
+  // any other error (bad PAT, no permission, project not found) would fail
+  // the same way for every type, so retrying across them would just hide
+  // the real problem.
+  const WORK_ITEM_TYPE_CANDIDATES = ['Bug', 'Issue', 'Task']
   try {
-    const upstream = await fetchAdoWithRetry(
-      `https://dev.azure.com/${config.organization}/${encodeURIComponent(config.project)}/_apis/wit/workitems/$${workItemType}?api-version=7.1`,
-      {
-        method: 'PATCH',
-        headers: { Authorization: authHeader(config.personalAccessToken), 'Content-Type': 'application/json-patch+json' },
-        body: JSON.stringify([
-          { op: 'add', path: '/fields/System.Title', value: title },
-          { op: 'add', path: '/fields/System.Description', value: logToHtml(description) },
-        ]),
+    let lastError: { status: number; message: string } | null = null
+    for (const workItemType of WORK_ITEM_TYPE_CANDIDATES) {
+      const upstream = await fetchAdoWithRetry(
+        `https://dev.azure.com/${config.organization}/${encodeURIComponent(config.project)}/_apis/wit/workitems/$${encodeURIComponent(workItemType)}?api-version=7.1`,
+        {
+          method: 'PATCH',
+          headers: { Authorization: authHeader(config.personalAccessToken), 'Content-Type': 'application/json-patch+json' },
+          body: JSON.stringify([
+            { op: 'add', path: '/fields/System.Title', value: title },
+            { op: 'add', path: '/fields/System.Description', value: logToHtml(description) },
+          ]),
+        }
+      )
+      if (upstream.ok) {
+        const data = (await upstream.json()) as { id: number; fields?: { 'System.State'?: string } }
+        const state = data.fields?.['System.State'] || 'New'
+        res.json({
+          ticketId: String(data.id),
+          state,
+          isTerminal: isTerminalAdoState(state),
+          url: workItemUrl(config.organization, String(data.id)),
+        })
+        return
       }
-    )
-    if (!upstream.ok) {
       const body = await upstream.text().catch(() => '')
-      res.status(upstream.status).json({ error: `Azure DevOps create work item failed: ${upstream.status}${body ? ` — ${body.slice(0, 300)}` : ''}` })
-      return
+      const typeNotFound = /VS402323/.test(body) || /work item type .* does not exist/i.test(body)
+      lastError = { status: upstream.status, message: `Azure DevOps create work item failed: ${upstream.status}${body ? ` — ${body.slice(0, 300)}` : ''}` }
+      if (!typeNotFound) break
     }
-    const data = (await upstream.json()) as { id: number; fields?: { 'System.State'?: string } }
-    const state = data.fields?.['System.State'] || 'New'
-    res.json({
-      ticketId: String(data.id),
-      state,
-      isTerminal: isTerminalAdoState(state),
-      url: workItemUrl(config.organization, String(data.id)),
-    })
+    res.status(lastError?.status ?? 502).json({ error: lastError?.message ?? 'Azure DevOps create work item failed.' })
   } catch (err) {
     res.status(502).json({ error: `Azure DevOps upstream request failed: ${String(err)}` })
   }

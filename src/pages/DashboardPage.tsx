@@ -2,7 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore } from '../store/useStore'
 import { useAuthStore } from '../store/useAuthStore'
-import { computeDashboard, computeCustomGroupDashboard, computeCycleTrend, isTicketOpen, isTicketStale, daysSinceActivity } from '../lib/selectors'
+import {
+  computeDashboard,
+  computeCustomGroupDashboard,
+  computeTeamDashboard,
+  computeCycleTrend,
+  isTicketOpen,
+  isTicketStale,
+  daysSinceActivity,
+} from '../lib/selectors'
 import { getGroupColor, TICKET_STATUSES } from '../data/constants'
 import { canSyncFromBoard } from '../lib/devopsConnector'
 import Donut from '../components/dashboard/Donut'
@@ -114,6 +122,7 @@ export default function DashboardPage() {
   const groups = useStore((s) => s.groups)
   const teams = useStore((s) => s.teams)
   const deleteGroup = useStore((s) => s.deleteGroup)
+  const deleteTeam = useStore((s) => s.deleteTeam)
   const exportState = useStore((s) => s.exportState)
   const importState = useStore((s) => s.importState)
   const logTicket = useStore((s) => s.logTicket)
@@ -130,7 +139,9 @@ export default function DashboardPage() {
 
   const dash = computeDashboard(templates, cycles, selectedCycleId || '', groups, teams)
   const groupDash = computeCustomGroupDashboard(templates, groups, selectedCycleId || '')
+  const teamDash = computeTeamDashboard(templates, teams, selectedCycleId || '')
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null)
+  const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null)
   const cycleTrend = computeCycleTrend(templates, cycles)
   const trendStats = useMemo(() => {
     if (cycleTrend.length < 2) return null
@@ -334,6 +345,103 @@ export default function DashboardPage() {
             <div className="foot">mixed pass/fail recently</div>
           </div>
         </div>
+      </div>
+
+      <div className="section">
+        <div className="section-head">
+          <div>
+            <span className="eyebrow">Team rollup</span>
+            <h2>Teams</h2>
+            <p>
+              Each team's combined progress across every template assigned to it — e.g. a "Cloud" team spanning its
+              AWS, Azure and GCP groups gets one progress bar here; a "Dev" team with its own templates gets its own.
+              Assign a template's team from its own page.
+            </p>
+          </div>
+        </div>
+        {teamDash.length === 0 ? (
+          <div className="card empty-state">No teams yet — open a tracked template and use its "Team" panel to create one.</div>
+        ) : (
+          <div className="cloud-row" style={{ gridTemplateColumns: `repeat(${Math.max(teamDash.length, 1)}, 1fr)` }}>
+            {teamDash.map((tm) => (
+              <div className="card cloud-card" key={tm.id}>
+                <div className="cc-top" style={{ justifyContent: 'space-between' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="cloud-dot" style={{ background: getGroupColor(tm.name), width: 10, height: 10 }} />
+                    {tm.name}
+                  </span>
+                  {isAdmin && (
+                    <button
+                      className="icon-btn"
+                      title="Delete team (templates stay tracked)"
+                      onClick={() => {
+                        if (confirm(`Delete team "${tm.name}"? Templates stay tracked — this only clears their team.`)) deleteTeam(tm.id)
+                      }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+                <div className="cc-body">
+                  <Donut percent={tm.pct} size={88} strokeWidth={9} color={getGroupColor(tm.name)} />
+                  <div className="cc-stats">
+                    <div>
+                      <b>{tm.templateCount}</b>
+                      <span>Templates</span>
+                    </div>
+                    <div>
+                      <b style={{ color: 'var(--success)' }}>{tm.passNodes}</b>
+                      <span>Passed</span>
+                    </div>
+                    <div>
+                      <b style={{ color: 'var(--critical)' }}>{tm.failNodes}</b>
+                      <span>Failed</span>
+                    </div>
+                  </div>
+                </div>
+                <button
+                  className="btn small"
+                  style={{ width: '100%', marginTop: 10 }}
+                  onClick={() => setExpandedTeamId(expandedTeamId === tm.id ? null : tm.id)}
+                >
+                  {expandedTeamId === tm.id ? 'Hide templates' : `View ${tm.templateCount} template${tm.templateCount === 1 ? '' : 's'}`}
+                </button>
+                {expandedTeamId === tm.id && (
+                  <div
+                    style={{
+                      marginTop: 10,
+                      borderTop: '1px solid var(--border)',
+                      paddingTop: 10,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 8,
+                    }}
+                  >
+                    {tm.templates.length === 0 ? (
+                      <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>No templates assigned to this team yet.</div>
+                    ) : (
+                      tm.templates.map((t) => (
+                        <Link key={t.id} to={`/templates/${t.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+                            <span className={`status ${statusClass(t.status)}`} style={{ fontSize: 11 }}>
+                              {t.status === 'Success' ? '●' : t.status === 'Failed' ? '●' : '○'}
+                            </span>
+                            <span style={{ flex: 1, fontWeight: 600 }}>{t.name}</span>
+                            <span style={{ color: 'var(--success)' }}>{t.passNodes}✓</span>
+                            <span style={{ color: 'var(--critical)' }}>{t.failNodes}✗</span>
+                            <span style={{ color: 'var(--text-faint)' }}>
+                              {t.testedNodes}/{t.totalNodes}
+                            </span>
+                          </div>
+                        </Link>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="section">

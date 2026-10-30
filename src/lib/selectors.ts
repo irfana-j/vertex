@@ -300,60 +300,82 @@ export function computeDashboard(
   }
 }
 
+// Shared by computeCustomGroupDashboard and computeTeamDashboard below —
+// "progress" for any set of templates means tested (pass or fail both
+// count, matching node-weighted progress everywhere else in this app),
+// broken out by pass/fail so failures are visible at a glance, with a
+// per-template breakdown for drilling in.
+function computeMembersRollup(id: string, name: string, members: Template[], cycleId: string): GroupDashboard {
+  let totalNodes = 0
+  let passNodes = 0
+  let failNodes = 0
+
+  const templateRows = members.map((t) => {
+    const scenarioNodes = getScenarioNodes(t)
+    const executedIds = getExecutedScenarioNodeIds(t, cycleId)
+    const latestResults = getNodeResultsInCycle(t, cycleId)
+    let pass = 0
+    let fail = 0
+    scenarioNodes.forEach((n) => {
+      if (!executedIds.has(n.id)) return
+      if (latestResults[n.id]?.status === 'pass') pass++
+      else fail++
+    })
+    totalNodes += scenarioNodes.length
+    passNodes += pass
+    failNodes += fail
+    return {
+      id: t.id,
+      name: t.symphonyTemplateName,
+      totalNodes: scenarioNodes.length,
+      passNodes: pass,
+      failNodes: fail,
+      testedNodes: pass + fail,
+      pct: scenarioNodes.length ? Math.round(((pass + fail) / scenarioNodes.length) * 100) : 0,
+      status: getStatus(t, cycleId),
+    }
+  })
+
+  const testedNodes = passNodes + failNodes
+  return {
+    id,
+    name,
+    templateCount: members.length,
+    totalNodes,
+    testedNodes,
+    passNodes,
+    failNodes,
+    pct: totalNodes ? Math.round((testedNodes / totalNodes) * 100) : 0,
+    templates: templateRows,
+  }
+}
+
 // Cumulative progress for each user-defined group (a set of tracked
 // templates the operator chose to track together, e.g. "Azure rollout") —
-// separate from Symphony's own group field. "Progress" here means tested
-// (pass or fail both count, matching node-weighted progress everywhere
-// else in this app), broken out by pass/fail so a group's failures are
-// visible at a glance, with a per-template breakdown for drilling in.
+// separate from Symphony's own group field. A template can sit in any
+// number of groups.
 export function computeCustomGroupDashboard(templates: Template[], groups: RegressionGroup[], cycleId: string): GroupDashboard[] {
   const tracked = templates.filter(isRegressionTemplate)
   const byId = new Map(tracked.map((t) => [t.id, t]))
 
   return groups.map((g) => {
     const members = g.templateIds.map((id) => byId.get(id)).filter((t): t is Template => Boolean(t))
-    let totalNodes = 0
-    let passNodes = 0
-    let failNodes = 0
+    return computeMembersRollup(g.id, g.name, members, cycleId)
+  })
+}
 
-    const templateRows = members.map((t) => {
-      const scenarioNodes = getScenarioNodes(t)
-      const executedIds = getExecutedScenarioNodeIds(t, cycleId)
-      const latestResults = getNodeResultsInCycle(t, cycleId)
-      let pass = 0
-      let fail = 0
-      scenarioNodes.forEach((n) => {
-        if (!executedIds.has(n.id)) return
-        if (latestResults[n.id]?.status === 'pass') pass++
-        else fail++
-      })
-      totalNodes += scenarioNodes.length
-      passNodes += pass
-      failNodes += fail
-      return {
-        id: t.id,
-        name: t.symphonyTemplateName,
-        totalNodes: scenarioNodes.length,
-        passNodes: pass,
-        failNodes: fail,
-        testedNodes: pass + fail,
-        pct: scenarioNodes.length ? Math.round(((pass + fail) / scenarioNodes.length) * 100) : 0,
-        status: getStatus(t, cycleId),
-      }
-    })
+// Cumulative progress per team — unlike Regression Groups above, a
+// template belongs to at most one team, so this is a straight partition of
+// tracked templates by teamId rather than a many-to-many membership list.
+// A team like "Cloud" that spans several Regression Groups (AWS, Azure,
+// GCP) still gets ONE combined progress bar here; its own group rollup
+// above still breaks those clouds out individually.
+export function computeTeamDashboard(templates: Template[], teams: Team[], cycleId: string): GroupDashboard[] {
+  const tracked = templates.filter(isRegressionTemplate)
 
-    const testedNodes = passNodes + failNodes
-    return {
-      id: g.id,
-      name: g.name,
-      templateCount: members.length,
-      totalNodes,
-      testedNodes,
-      passNodes,
-      failNodes,
-      pct: totalNodes ? Math.round((testedNodes / totalNodes) * 100) : 0,
-      templates: templateRows,
-    }
+  return teams.map((team) => {
+    const members = tracked.filter((t) => t.teamId === team.id)
+    return computeMembersRollup(team.id, team.name, members, cycleId)
   })
 }
 
