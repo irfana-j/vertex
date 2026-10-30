@@ -549,6 +549,7 @@ export const useStore = create<StoreState>()(
               id: newId,
               ...ticketData,
               cycleId,
+              boardState: null,
               url: ticketUrl(ticketData.system, ticketData.ticketId, ticketData.organization),
               lastActivityAt: now,
               createdAt: now,
@@ -599,6 +600,7 @@ export const useStore = create<StoreState>()(
                       ? {
                           ...tk,
                           status: board.status,
+                          boardState: board.boardState,
                           assignee: board.assignee || tk.assignee,
                           summary: board.summary || tk.summary,
                           lastActivityAt: board.lastActivityAt,

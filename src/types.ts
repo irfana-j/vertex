@@ -67,6 +67,14 @@ export interface Ticket {
   organization: string | null
   severity: TicketSeverity
   status: TicketStatus
+  // The board's own literal state text (e.g. "To Do", "Doing", "Done" —
+  // whatever that specific project's workflow calls its columns), kept
+  // alongside `status` rather than instead of it: `status` is this app's
+  // own small open/closed-ish bucket that dashboards, filters and colors
+  // are built around, which can't represent an arbitrary per-project
+  // workflow. null until the first successful board sync, or for a ticket
+  // with no board to sync from.
+  boardState: string | null
   assignee: string
   scenario: string | null
   summary: string
@@ -171,6 +179,7 @@ export interface SymphonyConnectionStatus {
 
 export interface TicketBoardStatus {
   status: TicketStatus
+  boardState: string
   assignee: string
   summary: string
   lastActivityAt: number

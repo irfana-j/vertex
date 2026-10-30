@@ -660,9 +660,9 @@ export default function DashboardPage() {
                     {canSyncFromBoard(t) ? (
                       <span
                         className={`tstatus ${ticketStatusClass(t.status)}`}
-                        title="Synced from the board — use Sync to refresh it, not editable here"
+                        title={`Synced from the board — use Sync to refresh it, not editable here${t.boardState ? ` (board state: ${t.boardState})` : ''}`}
                       >
-                        {t.status}
+                        {t.boardState || t.status}
                       </span>
                     ) : (
                       <select

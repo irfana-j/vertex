@@ -46,6 +46,13 @@ function boardUrl(system: TicketSystem, ticketId: string, organization: string |
 
 export async function listAzureDevOpsIntegrations(): Promise<AzureDevOpsIntegrationEntry[]> {
   const res = await fetch('/api/integrations/azuredevops', { credentials: 'include' })
+  // Without this check, a transient failure here (a 401 racing right after
+  // login, a brief backend restart) returned an error body shaped nothing
+  // like { integrations }, so `data.integrations` was silently `undefined`
+  // — callers that didn't guard against that (TicketForm's "Org" picker,
+  // notably) threw inside an unawaited `.then()` with no `.catch`, which
+  // just silently dropped the whole org list instead of surfacing anything.
+  if (!res.ok) throw new Error(`Failed to load Azure DevOps integrations (${res.status})`)
   const data = (await res.json()) as { integrations: AzureDevOpsIntegrationEntry[] }
   return data.integrations
 }
@@ -88,8 +95,11 @@ export async function testAzureDevOpsIntegration(input: {
 // Once a board reaches a terminal state, this app's own ticket is
 // considered Closed — reopening it on the board flips it back to Open.
 // Anything else (New, Active, a custom workflow state) leaves the current
-// status alone rather than guessing at a mapping that doesn't exist.
-function nextStatusFromAdo(isTerminal: boolean, currentStatus: TicketStatus): TicketStatus {
+// status alone rather than guessing at a mapping that doesn't exist. Shared
+// by both Azure DevOps (isTerminalAdoState) and Jira (statusCategory.key)
+// below, each of which has its own way of deciding "terminal" from a
+// workflow that can otherwise be named anything a project wants.
+function nextStatusFromBoard(isTerminal: boolean, currentStatus: TicketStatus): TicketStatus {
   if (isTerminal) return 'Closed'
   if (currentStatus === 'Closed') return 'Open'
   return currentStatus
@@ -105,7 +115,11 @@ async function getAzureDevOpsWorkItemStatus(organization: string, ticketId: stri
   }
   const data = (await res.json()) as { state: string; isTerminal: boolean; title: string; assignee: string; lastActivityAt: number; url: string }
   return {
-    status: nextStatusFromAdo(data.isTerminal, currentStatus),
+    status: nextStatusFromBoard(data.isTerminal, currentStatus),
+    // The board's own literal column name (e.g. "To Do", "Doing", "Done")
+    // — every project can name its workflow states differently, so this is
+    // shown as-is rather than forced into this app's own four-value status.
+    boardState: data.state,
     assignee: data.assignee,
     summary: data.title,
     lastActivityAt: data.lastActivityAt,
@@ -171,8 +185,17 @@ export async function getTicketStatus({
     })
     if (!res.ok) throw new Error(`Jira getIssue failed: ${res.status}`)
     const data = await res.json()
+    // Jira's status category is a fixed three-value field ('new' / 'indeterminate'
+    // / 'done') every workflow maps onto regardless of what its own custom
+    // states are called — the same role isTerminalAdoState plays for Azure
+    // DevOps's free-text state. Previously this put Jira's raw status name
+    // straight into `status`, which isn't one of this app's four values at
+    // all (it only ever matched by accident, if a project happened to name
+    // a state "Open" or "Closed").
+    const isTerminal = data.fields.status?.statusCategory?.key === 'done'
     return {
-      status: data.fields.status.name,
+      status: nextStatusFromBoard(isTerminal, currentStatus),
+      boardState: data.fields.status?.name || '',
       assignee: data.fields.assignee?.displayName || '',
       summary: data.fields.summary || '',
       lastActivityAt: new Date(data.fields.updated).getTime(),
@@ -180,7 +203,7 @@ export async function getTicketStatus({
     }
   }
   const state = BOARD_STATE[ticketId] || { status: 'Open' as TicketStatus, assignee: '', summary: '', lastActivityAt: now }
-  return delay({ ...state, url: boardUrl(system, ticketId, organization) })
+  return delay({ ...state, boardState: state.status, url: boardUrl(system, ticketId, organization) })
 }
 
 // Posts a comment on the board asking for a status update — this is what
