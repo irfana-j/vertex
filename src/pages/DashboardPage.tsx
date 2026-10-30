@@ -14,7 +14,6 @@ import {
 import { getGroupColor, TICKET_STATUSES } from '../data/constants'
 import { canSyncFromBoard } from '../lib/devopsConnector'
 import Donut from '../components/dashboard/Donut'
-import TicketForm from '../components/TicketForm'
 import type { CycleTrendPoint, TicketStatus } from '../types'
 
 interface TrendChartProps {
@@ -115,6 +114,9 @@ function sevClass(sev: string): string {
   return sev.toLowerCase()
 }
 
+const DAY_MS = 86400000
+const fmtDate = (ts: number) => new Date(ts).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+
 export default function DashboardPage() {
   const templates = useStore((s) => s.templates)
   const cycles = useStore((s) => s.cycles)
@@ -125,7 +127,6 @@ export default function DashboardPage() {
   const deleteTeam = useStore((s) => s.deleteTeam)
   const exportState = useStore((s) => s.exportState)
   const importState = useStore((s) => s.importState)
-  const logTicket = useStore((s) => s.logTicket)
   const updateTicket = useStore((s) => s.updateTicket)
   const syncTicketFromBoard = useStore((s) => s.syncTicketFromBoard)
   const syncAllTicketsFromBoard = useStore((s) => s.syncAllTicketsFromBoard)
@@ -155,6 +156,19 @@ export default function DashboardPage() {
   const isViewingHistory = selectedCycleId !== activeCycleId
   const cyclesNewestFirst = useMemo(() => [...cycles].sort((a, b) => b.startedAt - a.startedAt), [cycles])
 
+  // A closed cycle's full span (start, end, and how many days it ran) —
+  // the live/open cycle instead counts up from its own start, one day at a
+  // time, since there's no end yet to measure a span against.
+  const cycleTimeline = useMemo(() => {
+    if (!selectedCycle) return null
+    if (selectedCycle.closedAt !== null) {
+      const days = Math.max(1, Math.round((selectedCycle.closedAt - selectedCycle.startedAt) / DAY_MS))
+      return { closed: true as const, startedAt: selectedCycle.startedAt, closedAt: selectedCycle.closedAt, days }
+    }
+    const dayNumber = Math.floor((Date.now() - selectedCycle.startedAt) / DAY_MS) + 1
+    return { closed: false as const, startedAt: selectedCycle.startedAt, dayNumber }
+  }, [selectedCycle])
+
   const [search, setSearch] = useState('')
   const [groupFilter, setGroupFilter] = useState('All')
   const [teamFilter, setTeamFilter] = useState('All')
@@ -162,15 +176,6 @@ export default function DashboardPage() {
   const [syncingAllTickets, setSyncingAllTickets] = useState(false)
   const [busyTicketId, setBusyTicketId] = useState<string | null>(null)
   const [ticketActionError, setTicketActionError] = useState<string | null>(null)
-  const [openTicketForm, setOpenTicketForm] = useState(false)
-  const [newTicketTemplateId, setNewTicketTemplateId] = useState('')
-  const ticketRollupRef = useRef<HTMLDivElement>(null)
-
-  const handleOpenTicketFormFor = (templateId: string) => {
-    setNewTicketTemplateId(templateId)
-    setOpenTicketForm(true)
-    ticketRollupRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -256,8 +261,7 @@ export default function DashboardPage() {
         <div>
           <h1>Regression Dashboard</h1>
           <p>
-            Showing the <b>{selectedCycle?.label}</b> cycle
-            {isViewingHistory ? ` (closed ${selectedCycle?.closedAt ? new Date(selectedCycle.closedAt).toLocaleDateString() : ''})` : ' — current'}, across{' '}
+            Showing the <b>{selectedCycle?.label}</b> cycle{isViewingHistory ? '' : ' — current'}, across{' '}
             <b>{dash.totalTemplates}</b> template
             {dash.totalTemplates === 1 ? '' : 's'} with a Template Info node, "Enabled for regression" on, and a{' '}
             <span className="uc-tag" style={{ verticalAlign: 1 }}>
@@ -266,6 +270,20 @@ export default function DashboardPage() {
             label. Progress is counted by scenario node — a template with 40 nodes carries 40x the weight of one with 1 —
             not by template.
           </p>
+          {cycleTimeline && (
+            <p className="untracked-note">
+              {cycleTimeline.closed ? (
+                <>
+                  Ran from <b>{fmtDate(cycleTimeline.startedAt)}</b> to <b>{fmtDate(cycleTimeline.closedAt)}</b> —{' '}
+                  <b>{cycleTimeline.days}</b> day{cycleTimeline.days === 1 ? '' : 's'}.
+                </>
+              ) : (
+                <>
+                  Started <b>{fmtDate(cycleTimeline.startedAt)}</b> — <b>Day {cycleTimeline.dayNumber}</b> of this cycle.
+                </>
+              )}
+            </p>
+          )}
           {dash.untrackedCount > 0 && (
             <p className="untracked-note">
               {dash.untrackedCount} more template{dash.untrackedCount === 1 ? '' : 's'} exist{dash.untrackedCount === 1 ? 's' : ''} but{' '}
@@ -736,14 +754,15 @@ export default function DashboardPage() {
                       >
                         {r.ticketCount} total{r.openTicketCount > 0 ? ` · ${r.openTicketCount} open` : ''}
                       </Link>
-                    ) : r.status === 'Failed' && isAdmin ? (
-                      <button
+                    ) : r.status === 'Failed' ? (
+                      <Link
+                        to={`/templates/${r.id}`}
                         className="ticket-link"
-                        style={{ background: 'var(--critical-soft)', color: 'var(--critical)', border: 'none', cursor: 'pointer' }}
-                        onClick={() => handleOpenTicketFormFor(r.id)}
+                        style={{ background: 'var(--critical-soft)', color: 'var(--critical)' }}
+                        title="Raise a ticket from the failed node's log"
                       >
-                        + Log ticket
-                      </button>
+                        Raise ticket
+                      </Link>
                     ) : (
                       <span className="reason none">—</span>
                     )}
@@ -756,7 +775,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="section" ref={ticketRollupRef}>
+      <div className="section">
         <div className="section-head" style={{ alignItems: 'center' }}>
           <div>
             <span className="eyebrow">Ticket rollup</span>
@@ -764,48 +783,13 @@ export default function DashboardPage() {
             <p>Status syncs live from the board — stays open across cycles until resolved there.</p>
           </div>
           {isAdmin && (
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn small" onClick={() => setOpenTicketForm((v) => !v)}>
-                + Add ticket
-              </button>
-              <button className="btn small" onClick={handleSyncAllTickets} disabled={syncingAllTickets}>
-                {syncingAllTickets ? 'Syncing…' : '⟳ Sync all from board'}
-              </button>
-            </div>
+            <button className="btn small" onClick={handleSyncAllTickets} disabled={syncingAllTickets}>
+              {syncingAllTickets ? 'Syncing…' : '⟳ Sync all from board'}
+            </button>
           )}
         </div>
         {ticketActionError && (
           <p style={{ fontSize: 12.5, color: 'var(--critical)', marginBottom: 10 }}>{ticketActionError}</p>
-        )}
-        {openTicketForm && isAdmin && (
-          <div className="card" style={{ padding: 16, marginBottom: 14 }}>
-            <div className="field" style={{ maxWidth: 320, marginBottom: 10 }}>
-              <label>Template</label>
-              <select className="ctrl" value={newTicketTemplateId} onChange={(e) => setNewTicketTemplateId(e.target.value)}>
-                <option value="">Select a template…</option>
-                {dash.rows.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {newTicketTemplateId ? (
-              <TicketForm
-                onCancel={() => {
-                  setOpenTicketForm(false)
-                  setNewTicketTemplateId('')
-                }}
-                onSubmit={(data) => {
-                  logTicket(newTicketTemplateId, { ...data, runId: null })
-                  setOpenTicketForm(false)
-                  setNewTicketTemplateId('')
-                }}
-              />
-            ) : (
-              <p style={{ fontSize: 12, color: 'var(--text-faint)' }}>Pick which template this ticket belongs to first.</p>
-            )}
-          </div>
         )}
         {dash.allTickets.filter(isTicketOpen).length === 0 ? (
           <div className="card empty-state">No open tickets.</div>
