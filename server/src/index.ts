@@ -1,4 +1,5 @@
 import express from 'express'
+import type { NextFunction, Request, Response } from 'express'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getState, setState, type AppState } from './db.js'
@@ -103,6 +104,18 @@ app.post('/api/azuredevops/:organization/workitems', requireAdmin, forwardCreate
 app.use(express.static(CLIENT_DIST))
 app.get('*', (_req, res) => {
   res.sendFile(path.join(CLIENT_DIST, 'index.html'))
+})
+
+// Catches every error passed to next(err) above. Without this, Express's
+// own default handler took over — it logs nothing (so a "500 happening
+// more often" report had no server-side trail to chase) and, outside
+// development, sends a bare "Internal Server Error" that isn't the JSON
+// body every client fetch here expects, which turned one real failure into
+// a second, confusing one client-side. Always last, after every route.
+app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+  if (res.headersSent) return next(err)
+  console.error('Unhandled request error:', err)
+  res.status(500).json({ error: 'Internal server error' })
 })
 
 const server = app.listen(PORT, () => {

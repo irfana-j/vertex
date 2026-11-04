@@ -6,7 +6,6 @@ import { formatDateTime } from '../lib/format'
 import { getGroupColor } from '../data/constants'
 import { listSymphonyTemplates, getSymphonyTemplate } from '../lib/symphonyConnector'
 import {
-  getTemplateGroup,
   getTemplateMeta,
   getStatus,
   isFlaky,
@@ -15,7 +14,7 @@ import {
   isRegressionTemplate,
   getLatestRunOverall,
 } from '../lib/selectors'
-import type { FlowNode, SymphonyTemplateSummary } from '../types'
+import type { FlowNode, SymphonyTemplateSummary, Template } from '../types'
 
 const PAGE_SIZE = 25
 const day = 86400000
@@ -249,9 +248,89 @@ function TrackTemplatePicker({ trackedSymphonyIds, onCancel, onTracked }: TrackT
   )
 }
 
+interface TemplateCardProps {
+  template: Template
+  groupNames: string[]
+  isAdmin: boolean
+  activeCycleId: string | null
+  syncingId: string | null
+  onSync: (id: string) => void
+}
+
+function TemplateCard({ template: t, groupNames, isAdmin, activeCycleId, syncingId, onSync }: TemplateCardProps) {
+  const meta = getTemplateMeta(t)
+  const status = getStatus(t, activeCycleId || '')
+  const flaky = isFlaky(t)
+  const tracked = isRegressionTemplate(t)
+  const openTickets = getTicketsForTemplate(t).filter(isTicketOpen)
+  const latestRun = getLatestRunOverall(t)
+
+  return (
+    <div className="card tpl-card">
+      <div className="tpl-card-top">
+        <div>
+          <h3>
+            <Link to={`/templates/${t.id}`} className="tpl-card-title-link">
+              {t.symphonyTemplateName}
+            </Link>
+          </h3>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {groupNames.map((name) => (
+              <span className="cloud-chip" key={name}>
+                <span className="cloud-dot" style={{ background: getGroupColor(name) }} />
+                {name}
+              </span>
+            ))}
+            <span className="symphony-pick-id">{t.symphonyTemplateId}</span>
+          </div>
+        </div>
+        <StatusPill status={status} flaky={flaky} />
+      </div>
+
+      {!tracked && (
+        <div className="not-tracked-note">
+          Not counted in the dashboard — {meta.enabled === false ? 'turn on' : 'add'} "Enabled for regression" on its
+          Template Info node.
+        </div>
+      )}
+
+      <div className="desc">{t.description}</div>
+
+      {latestRun && (
+        <div className="latest-job-line">
+          <span className={`status ${latestRun.overallStatus === 'Success' ? 'ok' : 'fail'}`}>
+            {latestRun.overallStatus === 'Success' ? '●' : '●'}
+          </span>
+          <span className="latest-job-id">{latestRun.id}</span>
+          <span className="latest-job-sub">
+            {latestRun.overallStatus} · {formatDateTime(latestRun.timestamp)}
+          </span>
+        </div>
+      )}
+
+      {openTickets.length > 0 && (
+        <div className="uc-tags">
+          <span className="uc-tag" style={{ color: 'var(--primary-dark)', background: 'var(--primary-soft)', borderColor: 'transparent' }}>
+            {openTickets.length} open ticket{openTickets.length > 1 ? 's' : ''}
+          </span>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div className="tpl-card-foot">
+          <button className="btn small primary" disabled={syncingId === t.id} onClick={() => onSync(t.id)}>
+            {syncingId === t.id ? 'Syncing…' : '⟳ Sync'}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function TemplatesListPage() {
   const templates = useStore((s) => s.templates)
   const teams = useStore((s) => s.teams)
+  const groups = useStore((s) => s.groups)
   const cycles = useStore((s) => s.cycles)
   const activeCycleId = useStore((s) => s.activeCycleId)
   const syncJobResults = useStore((s) => s.syncJobResults)
@@ -291,6 +370,73 @@ export default function TemplatesListPage() {
     setSyncAllFlash(parts.length ? parts.join(', ') : 'No new job results')
     setTimeout(() => setSyncAllFlash(null), 4000)
   }
+
+  // Team --> Group --> Template. A flat grid of every tracked template got
+  // unreadable once there were more than a handful — organizing by team
+  // (the org-level unit) and then by Regression Group (this app's own,
+  // not Symphony's native group field, which is often empty) mirrors how
+  // the Dashboard's own rollups are organized. A template in more than one
+  // group appears once per group it's in — same as the Dashboard's group
+  // chips — rather than picking just one arbitrarily. A team with no
+  // templates yet doesn't get a section; "No team assigned" collects
+  // anything without one, grouped the same way underneath.
+  const teamBuckets = useMemo(() => {
+    interface GroupBucket {
+      id: string
+      name: string
+      templates: Template[]
+    }
+    interface TeamBucket {
+      id: string
+      name: string
+      templates: Template[]
+      groups: GroupBucket[]
+    }
+
+    const buildGroupBuckets = (members: Template[]): GroupBucket[] => {
+      const byGroupId = new Map<string, Template[]>()
+      const ungrouped: Template[] = []
+      members.forEach((t) => {
+        const memberGroups = groups.filter((g) => g.templateIds.includes(t.id))
+        if (memberGroups.length === 0) {
+          ungrouped.push(t)
+          return
+        }
+        memberGroups.forEach((g) => {
+          const list = byGroupId.get(g.id)
+          if (list) list.push(t)
+          else byGroupId.set(g.id, [t])
+        })
+      })
+      const named = groups
+        .filter((g) => byGroupId.has(g.id))
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((g) => ({ id: g.id, name: g.name, templates: byGroupId.get(g.id)! }))
+      return ungrouped.length ? [...named, { id: 'ungrouped', name: 'Ungrouped', templates: ungrouped }] : named
+    }
+
+    const byTeamKey = new Map<string, Template[]>()
+    templates.forEach((t) => {
+      const key = t.teamId || 'unassigned'
+      const list = byTeamKey.get(key)
+      if (list) list.push(t)
+      else byTeamKey.set(key, [t])
+    })
+
+    const result: TeamBucket[] = [...teams]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((team) => {
+        const members = byTeamKey.get(team.id) || []
+        return { id: team.id, name: team.name, templates: members, groups: buildGroupBuckets(members) }
+      })
+      .filter((bucket) => bucket.templates.length > 0)
+
+    const unassigned = byTeamKey.get('unassigned') || []
+    if (unassigned.length > 0) {
+      result.push({ id: 'unassigned', name: 'No team assigned', templates: unassigned, groups: buildGroupBuckets(unassigned) })
+    }
+    return result
+  }, [templates, teams, groups])
 
   return (
     <div className="main">
@@ -333,85 +479,40 @@ export default function TemplatesListPage() {
           <p>Track a Symphony template to start following its regression progress.</p>
         </div>
       ) : (
-        <div className="tpl-grid">
-          {templates.map((t) => {
-            const group = getTemplateGroup(t)
-            const teamName = t.teamId ? teams.find((tm) => tm.id === t.teamId)?.name ?? null : null
-            const meta = getTemplateMeta(t)
-            const status = getStatus(t, activeCycleId || '')
-            const flaky = isFlaky(t)
-            const tracked = isRegressionTemplate(t)
-            const openTickets = getTicketsForTemplate(t).filter(isTicketOpen)
-            const latestRun = getLatestRunOverall(t)
-
-            return (
-              <div className="card tpl-card" key={t.id}>
-                <div className="tpl-card-top">
-                  <div>
-                    <h3>
-                      <Link to={`/templates/${t.id}`} className="tpl-card-title-link">
-                        {t.symphonyTemplateName}
-                      </Link>
-                    </h3>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                      {group !== 'Unknown' && (
-                        <span className="cloud-chip">
-                          <span className="cloud-dot" style={{ background: getGroupColor(group) }} />
-                          {group}
-                        </span>
-                      )}
-                      {teamName && (
-                        <span className="cloud-chip" title="Team">
-                          <span className="cloud-dot" style={{ background: getGroupColor(teamName) }} />
-                          {teamName}
-                        </span>
-                      )}
-                      <span className="symphony-pick-id">{t.symphonyTemplateId}</span>
-                    </div>
-                  </div>
-                  <StatusPill status={status} flaky={flaky} />
+        teamBuckets.map((team) => (
+          <div className="tpl-team-section" key={team.id}>
+            <div className="tpl-team-head">
+              <span
+                className="cloud-dot"
+                style={{ width: 11, height: 11, background: team.id === 'unassigned' ? 'var(--text-faint)' : getGroupColor(team.name) }}
+              />
+              <h2>{team.name}</h2>
+              <span className="tpl-team-count">
+                {team.templates.length} template{team.templates.length === 1 ? '' : 's'}
+              </span>
+            </div>
+            {team.groups.map((group) => (
+              <div className="tpl-group-section" key={group.id}>
+                <div className="tpl-group-head">
+                  {group.name} <span>({group.templates.length})</span>
                 </div>
-
-                {!tracked && (
-                  <div className="not-tracked-note">
-                    Not counted in the dashboard — {meta.enabled === false ? 'turn on' : 'add'} "Enabled for regression" on its
-                    Template Info node.
-                  </div>
-                )}
-
-                <div className="desc">{t.description}</div>
-
-                {latestRun && (
-                  <div className="latest-job-line">
-                    <span className={`status ${latestRun.overallStatus === 'Success' ? 'ok' : 'fail'}`}>
-                      {latestRun.overallStatus === 'Success' ? '●' : '●'}
-                    </span>
-                    <span className="latest-job-id">{latestRun.id}</span>
-                    <span className="latest-job-sub">
-                      {latestRun.overallStatus} · {formatDateTime(latestRun.timestamp)}
-                    </span>
-                  </div>
-                )}
-
-                {openTickets.length > 0 && (
-                  <div className="uc-tags">
-                    <span className="uc-tag" style={{ color: 'var(--primary-dark)', background: 'var(--primary-soft)', borderColor: 'transparent' }}>
-                      {openTickets.length} open ticket{openTickets.length > 1 ? 's' : ''}
-                    </span>
-                  </div>
-                )}
-
-                {isAdmin && (
-                  <div className="tpl-card-foot">
-                    <button className="btn small primary" disabled={syncingId === t.id} onClick={() => handleSync(t.id)}>
-                      {syncingId === t.id ? 'Syncing…' : '⟳ Sync'}
-                    </button>
-                  </div>
-                )}
+                <div className="tpl-grid">
+                  {group.templates.map((t) => (
+                    <TemplateCard
+                      key={t.id}
+                      template={t}
+                      groupNames={groups.filter((g) => g.templateIds.includes(t.id)).map((g) => g.name)}
+                      isAdmin={isAdmin}
+                      activeCycleId={activeCycleId}
+                      syncingId={syncingId}
+                      onSync={handleSync}
+                    />
+                  ))}
+                </div>
               </div>
-            )
-          })}
-        </div>
+            ))}
+          </div>
+        ))
       )}
     </div>
   )

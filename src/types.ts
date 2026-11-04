@@ -309,7 +309,28 @@ export interface GroupDashboard {
   testedNodes: number
   passNodes: number
   failNodes: number
+  // Pass rate: passed nodes over TESTED nodes (not total) — a node that
+  // hasn't run yet doesn't count against this; a failure does. Coverage
+  // (has everything even been run) is a separate question — see
+  // templatesRunPct below.
   pct: number
+  // How many of this group/team's templates have been run at all this
+  // cycle — regardless of whether every node in them passed or failed.
+  // Regression for a team like "Cloud" is "done" once every template has
+  // run, independent of how many of those runs turned up failures.
+  templatesRunCount: number
+  templatesRunPct: number
+  // The moment every template in this group/team had its first run this
+  // cycle — i.e. when templatesRunPct actually reached 100%. Derived from
+  // the templates' own run timestamps, so it's naturally "frozen": it
+  // never moves once set, and re-syncing an already-covered template's
+  // job again doesn't change it. null while anything is still unrun (or
+  // the group/team has no templates at all).
+  finishedAt: number | null
+  // True once the cycle has run past the backend's fixed, never-displayed
+  // 2-week budget AND this group/team still hasn't finished — the
+  // "overdue" flag. Always false once finishedAt is set.
+  isOverdue: boolean
   templates: GroupDashboardTemplateRow[]
 }
 

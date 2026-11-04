@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useStore } from '../store/useStore'
 import { useAuthStore } from '../store/useAuthStore'
 
+const DAY_MS = 86400000
+
 export default function CycleControl() {
   const cycles = useStore((s) => s.cycles)
   const activeCycleId = useStore((s) => s.activeCycleId)
@@ -11,6 +13,7 @@ export default function CycleControl() {
   const [label, setLabel] = useState('')
 
   const active = cycles.find((c) => c.id === activeCycleId)
+  const dayNumber = active ? Math.floor((Date.now() - active.startedAt) / DAY_MS) + 1 : null
 
   const handleStart = () => {
     startNewCycle(label)
@@ -22,6 +25,7 @@ export default function CycleControl() {
     <div className="cycle-control">
       <div className="cycle-control-label">Regression cycle</div>
       <div className="cycle-control-active">{active?.label}</div>
+      {dayNumber !== null && <div className="cycle-control-sub">Day {dayNumber}</div>}
 
       {isAdmin &&
         (open ? (

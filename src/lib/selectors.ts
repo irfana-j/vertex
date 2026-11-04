@@ -300,12 +300,19 @@ export function computeDashboard(
   }
 }
 
-// Shared by computeCustomGroupDashboard and computeTeamDashboard below —
-// "progress" for any set of templates means tested (pass or fail both
-// count, matching node-weighted progress everywhere else in this app),
-// broken out by pass/fail so failures are visible at a glance, with a
-// per-template breakdown for drilling in.
-function computeMembersRollup(id: string, name: string, members: Template[], cycleId: string): GroupDashboard {
+// The backend-only budget for a whole regression cycle — never surfaced as
+// a countdown anywhere in the UI, only used to flag a group/team red once
+// it's been blown past. Changing this is a one-line edit, not a setting.
+const REGRESSION_BUDGET_MS = 14 * day
+
+// Shared by computeCustomGroupDashboard and computeTeamDashboard below.
+// `pct` is a pass rate — passed nodes over TESTED nodes, not total — so it
+// answers "of what's run so far, how much is actually passing," separate
+// from whether everything has been run at all (that's templatesRunPct
+// below). A node that hasn't run yet doesn't drag this down; a failure
+// does — that's the whole point of this bar.
+function computeMembersRollup(id: string, name: string, members: Template[], cycle: Cycle): GroupDashboard {
+  const cycleId = cycle.id
   let totalNodes = 0
   let passNodes = 0
   let failNodes = 0
@@ -331,12 +338,37 @@ function computeMembersRollup(id: string, name: string, members: Template[], cyc
       passNodes: pass,
       failNodes: fail,
       testedNodes: pass + fail,
-      pct: scenarioNodes.length ? Math.round(((pass + fail) / scenarioNodes.length) * 100) : 0,
+      pct: pass + fail ? Math.round((pass / (pass + fail)) * 100) : 0,
       status: getStatus(t, cycleId),
     }
   })
 
   const testedNodes = passNodes + failNodes
+  // Separate from the node-weighted pct above: whether a template ran at
+  // all this cycle, regardless of what its nodes turned up. A template
+  // whose every node failed still counts as "run" here — this metric
+  // answers "did we cover everything," not "did everything pass."
+  const templatesRunCount = members.filter((t) => wasExecutedInCycle(t, cycleId)).length
+  const allRun = members.length > 0 && templatesRunCount === members.length
+
+  // The instant this group/team actually finished: the LATEST of each
+  // template's own first-run-this-cycle timestamp — it only crosses 100%
+  // once the slowest template to get its first run finally gets one. Using
+  // each template's *first* run (not its latest) means re-syncing an
+  // already-covered template later never moves this once it's set — it's
+  // genuinely frozen, not just "currently showing 100%."
+  const finishedAt = allRun
+    ? members.reduce((latest, t) => {
+        const runs = getRunsInCycle(t, cycleId)
+        if (!runs.length) return latest
+        const firstRun = Math.min(...runs.map((r) => r.timestamp))
+        return Math.max(latest, firstRun)
+      }, 0)
+    : null
+
+  const elapsedMs = (cycle.closedAt ?? Date.now()) - cycle.startedAt
+  const isOverdue = members.length > 0 && finishedAt === null && elapsedMs > REGRESSION_BUDGET_MS
+
   return {
     id,
     name,
@@ -345,7 +377,11 @@ function computeMembersRollup(id: string, name: string, members: Template[], cyc
     testedNodes,
     passNodes,
     failNodes,
-    pct: totalNodes ? Math.round((testedNodes / totalNodes) * 100) : 0,
+    pct: testedNodes ? Math.round((passNodes / testedNodes) * 100) : 0,
+    templatesRunCount,
+    templatesRunPct: members.length ? Math.round((templatesRunCount / members.length) * 100) : 0,
+    finishedAt,
+    isOverdue,
     templates: templateRows,
   }
 }
@@ -354,13 +390,13 @@ function computeMembersRollup(id: string, name: string, members: Template[], cyc
 // templates the operator chose to track together, e.g. "Azure rollout") —
 // separate from Symphony's own group field. A template can sit in any
 // number of groups.
-export function computeCustomGroupDashboard(templates: Template[], groups: RegressionGroup[], cycleId: string): GroupDashboard[] {
+export function computeCustomGroupDashboard(templates: Template[], groups: RegressionGroup[], cycle: Cycle): GroupDashboard[] {
   const tracked = templates.filter(isRegressionTemplate)
   const byId = new Map(tracked.map((t) => [t.id, t]))
 
   return groups.map((g) => {
     const members = g.templateIds.map((id) => byId.get(id)).filter((t): t is Template => Boolean(t))
-    return computeMembersRollup(g.id, g.name, members, cycleId)
+    return computeMembersRollup(g.id, g.name, members, cycle)
   })
 }
 
@@ -370,12 +406,12 @@ export function computeCustomGroupDashboard(templates: Template[], groups: Regre
 // A team like "Cloud" that spans several Regression Groups (AWS, Azure,
 // GCP) still gets ONE combined progress bar here; its own group rollup
 // above still breaks those clouds out individually.
-export function computeTeamDashboard(templates: Template[], teams: Team[], cycleId: string): GroupDashboard[] {
+export function computeTeamDashboard(templates: Template[], teams: Team[], cycle: Cycle): GroupDashboard[] {
   const tracked = templates.filter(isRegressionTemplate)
 
   return teams.map((team) => {
     const members = tracked.filter((t) => t.teamId === team.id)
-    return computeMembersRollup(team.id, team.name, members, cycleId)
+    return computeMembersRollup(team.id, team.name, members, cycle)
   })
 }
 

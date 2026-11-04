@@ -2,6 +2,30 @@ import pg from 'pg'
 
 const { Pool } = pg
 
+// A managed Postgres (RDS, etc.) occasionally drops or resets a connection
+// out from under a query — a failover, a maintenance blip, a connection
+// recycled by the server side while idle in the pool. node-postgres doesn't
+// retry these itself, and since every authenticated request runs a session
+// check against this same database, a single transient blip showed up as a
+// 500 on practically any page load, not just one feature. Retrying a
+// couple of times on exactly these connection-level failures (never on a
+// real query error like a constraint violation) turns that into a brief
+// delay instead of a visible error.
+const RETRYABLE_PG_CODES = new Set(['ECONNRESET', 'EPIPE', 'ETIMEDOUT', '57P01', '08006', '08003', '08001', '08004'])
+const RETRY_DELAYS_MS = [150, 500]
+
+async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(text: string, params?: unknown[]): Promise<pg.QueryResult<T>> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await pool.query<T>(text, params)
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code
+      if (attempt >= RETRY_DELAYS_MS.length || !code || !RETRYABLE_PG_CODES.has(code)) throw err
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]))
+    }
+  }
+}
+
 // A single JSON blob per table, not a normalized schema — the "dumb
 // backend" design: the client keeps running all its existing business
 // logic (tracking, syncing, groups, tickets, cycles) exactly as before,
@@ -78,7 +102,7 @@ const ready = (async () => {
 
 export async function getState(): Promise<AppState> {
   await ready
-  const { rows } = await pool.query<{ data: AppState }>('SELECT data FROM app_state WHERE id = 1')
+  const { rows } = await query<{ data: AppState }>('SELECT data FROM app_state WHERE id = 1')
   if (!rows[0]) {
     await setState(DEFAULT_STATE)
     return DEFAULT_STATE
@@ -90,7 +114,7 @@ export async function getState(): Promise<AppState> {
 
 export async function setState(data: AppState): Promise<void> {
   await ready
-  await pool.query(
+  await query(
     `INSERT INTO app_state (id, data, updated_at) VALUES (1, $1, $2)
      ON CONFLICT (id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
     [JSON.stringify(data), Date.now()]
@@ -114,7 +138,7 @@ export interface AzureDevOpsIntegration {
 
 export async function getAzureDevOpsIntegrations(): Promise<AzureDevOpsIntegration[]> {
   await ready
-  const { rows } = await pool.query<{ data: { azureDevOps?: unknown } }>('SELECT data FROM integration_settings WHERE id = 1')
+  const { rows } = await query<{ data: { azureDevOps?: unknown } }>('SELECT data FROM integration_settings WHERE id = 1')
   if (!rows[0]) return []
   // Older builds stored a single object here instead of a list — treat
   // that shape as empty rather than crashing on a shape mismatch.
@@ -124,7 +148,7 @@ export async function getAzureDevOpsIntegrations(): Promise<AzureDevOpsIntegrati
 
 export async function setAzureDevOpsIntegrations(configs: AzureDevOpsIntegration[]): Promise<void> {
   await ready
-  await pool.query(
+  await query(
     `INSERT INTO integration_settings (id, data, updated_at) VALUES (1, $1, $2)
      ON CONFLICT (id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
     [JSON.stringify({ azureDevOps: configs }), Date.now()]
@@ -138,12 +162,12 @@ export interface SessionRecord {
 
 export async function createSession(token: string, role: string): Promise<void> {
   await ready
-  await pool.query('INSERT INTO sessions (token, role, last_activity_at) VALUES ($1, $2, $3)', [token, role, Date.now()])
+  await query('INSERT INTO sessions (token, role, last_activity_at) VALUES ($1, $2, $3)', [token, role, Date.now()])
 }
 
 export async function getSession(token: string): Promise<SessionRecord | null> {
   await ready
-  const { rows } = await pool.query<{ role: string; last_activity_at: string }>(
+  const { rows } = await query<{ role: string; last_activity_at: string }>(
     'SELECT role, last_activity_at FROM sessions WHERE token = $1',
     [token]
   )
@@ -156,10 +180,10 @@ export async function getSession(token: string): Promise<SessionRecord | null> {
 
 export async function touchSession(token: string): Promise<void> {
   await ready
-  await pool.query('UPDATE sessions SET last_activity_at = $2 WHERE token = $1', [token, Date.now()])
+  await query('UPDATE sessions SET last_activity_at = $2 WHERE token = $1', [token, Date.now()])
 }
 
 export async function deleteSession(token: string): Promise<void> {
   await ready
-  await pool.query('DELETE FROM sessions WHERE token = $1', [token])
+  await query('DELETE FROM sessions WHERE token = $1', [token])
 }

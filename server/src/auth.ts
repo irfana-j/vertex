@@ -23,13 +23,6 @@ const SESSION_COOKIE = 'vertex_session'
 // time checkSession() runs, since /api/session will no longer recognize
 // the cookie; a refresh before that point just reloads normally.
 const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000
-// The cookie's own browser-side lifetime is separate from (and longer
-// than) the idle timeout above — it's just how long the browser holds
-// onto the cookie at all, not re-issued on every request. The real
-// enforcement is server-side: the in-memory session entry it points at
-// gets dropped after 30 idle minutes regardless of how long the cookie
-// itself still has left.
-const COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
 // Sessions live in Postgres (see db.ts) rather than an in-memory Map — this
 // app runs behind an ALB, and an in-process Map is only visible to the one
@@ -108,7 +101,11 @@ export function setSessionCookie(res: Response, token: string) {
       httpOnly: true,
       sameSite: 'lax',
       path: '/',
-      maxAge: COOKIE_MAX_AGE_MS / 1000,
+      // No maxAge/expires — a browser-session cookie. Closing the browser
+      // (not just a tab) discards it, so the next visit always lands back
+      // on the login page instead of silently resuming an old session.
+      // The 30-minute idle timeout above still applies within one browser
+      // session regardless.
     })
   )
 }

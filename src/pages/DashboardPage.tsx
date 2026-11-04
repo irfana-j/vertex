@@ -14,6 +14,7 @@ import {
 import { getGroupColor, TICKET_STATUSES } from '../data/constants'
 import { canSyncFromBoard } from '../lib/devopsConnector'
 import Donut from '../components/dashboard/Donut'
+import RollupCard from '../components/dashboard/RollupCard'
 import type { CycleTrendPoint, TicketStatus } from '../types'
 
 interface TrendChartProps {
@@ -138,9 +139,15 @@ export default function DashboardPage() {
   // rather than leaving the dashboard stuck looking at what's now history.
   useEffect(() => setSelectedCycleId(activeCycleId), [activeCycleId])
 
+  const selectedCycle = cycles.find((c) => c.id === selectedCycleId)
+  // Only hit before any cycle has ever loaded — computeCustomGroupDashboard
+  // and computeTeamDashboard need a real Cycle (not just an id) to work out
+  // a group/team's finish day and overdue flag.
+  const rollupCycle = selectedCycle ?? { id: selectedCycleId || '', label: '', startedAt: Date.now(), closedAt: null }
+
   const dash = computeDashboard(templates, cycles, selectedCycleId || '', groups, teams)
-  const groupDash = computeCustomGroupDashboard(templates, groups, selectedCycleId || '')
-  const teamDash = computeTeamDashboard(templates, teams, selectedCycleId || '')
+  const groupDash = computeCustomGroupDashboard(templates, groups, rollupCycle)
+  const teamDash = computeTeamDashboard(templates, teams, rollupCycle)
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null)
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null)
   const cycleTrend = computeCycleTrend(templates, cycles)
@@ -152,21 +159,16 @@ export default function DashboardPage() {
     const best = closed.length ? closed.reduce((a, b) => (b.overallPct > a.overallPct ? b : a)) : null
     return { current, prev, delta: current.overallPct - prev.overallPct, best }
   }, [cycleTrend])
-  const selectedCycle = cycles.find((c) => c.id === selectedCycleId)
   const isViewingHistory = selectedCycleId !== activeCycleId
   const cyclesNewestFirst = useMemo(() => [...cycles].sort((a, b) => b.startedAt - a.startedAt), [cycles])
 
-  // A closed cycle's full span (start, end, and how many days it ran) —
-  // the live/open cycle instead counts up from its own start, one day at a
-  // time, since there's no end yet to measure a span against.
+  // A closed cycle's full span (start, end, and how many days it ran) — the
+  // live/open cycle's day count lives in the sidebar's cycle widget instead,
+  // since that's visible everywhere, not just on this page.
   const cycleTimeline = useMemo(() => {
-    if (!selectedCycle) return null
-    if (selectedCycle.closedAt !== null) {
-      const days = Math.max(1, Math.round((selectedCycle.closedAt - selectedCycle.startedAt) / DAY_MS))
-      return { closed: true as const, startedAt: selectedCycle.startedAt, closedAt: selectedCycle.closedAt, days }
-    }
-    const dayNumber = Math.floor((Date.now() - selectedCycle.startedAt) / DAY_MS) + 1
-    return { closed: false as const, startedAt: selectedCycle.startedAt, dayNumber }
+    if (!selectedCycle || selectedCycle.closedAt === null) return null
+    const days = Math.max(1, Math.round((selectedCycle.closedAt - selectedCycle.startedAt) / DAY_MS))
+    return { startedAt: selectedCycle.startedAt, closedAt: selectedCycle.closedAt, days }
   }, [selectedCycle])
 
   const [search, setSearch] = useState('')
@@ -272,16 +274,8 @@ export default function DashboardPage() {
           </p>
           {cycleTimeline && (
             <p className="untracked-note">
-              {cycleTimeline.closed ? (
-                <>
-                  Ran from <b>{fmtDate(cycleTimeline.startedAt)}</b> to <b>{fmtDate(cycleTimeline.closedAt)}</b> —{' '}
-                  <b>{cycleTimeline.days}</b> day{cycleTimeline.days === 1 ? '' : 's'}.
-                </>
-              ) : (
-                <>
-                  Started <b>{fmtDate(cycleTimeline.startedAt)}</b> — <b>Day {cycleTimeline.dayNumber}</b> of this cycle.
-                </>
-              )}
+              Ran from <b>{fmtDate(cycleTimeline.startedAt)}</b> to <b>{fmtDate(cycleTimeline.closedAt)}</b> —{' '}
+              <b>{cycleTimeline.days}</b> day{cycleTimeline.days === 1 ? '' : 's'}.
             </p>
           )}
           {dash.untrackedCount > 0 && (
@@ -382,81 +376,23 @@ export default function DashboardPage() {
         ) : (
           <div className="cloud-row" style={{ gridTemplateColumns: `repeat(${Math.max(teamDash.length, 1)}, 1fr)` }}>
             {teamDash.map((tm) => (
-              <div className="card cloud-card" key={tm.id}>
-                <div className="cc-top" style={{ justifyContent: 'space-between' }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span className="cloud-dot" style={{ background: getGroupColor(tm.name), width: 10, height: 10 }} />
-                    {tm.name}
-                  </span>
-                  {isAdmin && (
-                    <button
-                      className="icon-btn"
-                      title="Delete team (templates stay tracked)"
-                      onClick={() => {
+              <RollupCard
+                key={tm.id}
+                rollup={tm}
+                cycleStartedAt={rollupCycle.startedAt}
+                cycleClosedAt={rollupCycle.closedAt}
+                expanded={expandedTeamId === tm.id}
+                onToggleExpand={() => setExpandedTeamId(expandedTeamId === tm.id ? null : tm.id)}
+                onDelete={
+                  isAdmin
+                    ? () => {
                         if (confirm(`Delete team "${tm.name}"? Templates stay tracked — this only clears their team.`)) deleteTeam(tm.id)
-                      }}
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-                <div className="cc-body">
-                  <Donut percent={tm.pct} size={88} strokeWidth={9} color={getGroupColor(tm.name)} />
-                  <div className="cc-stats">
-                    <div>
-                      <b>{tm.templateCount}</b>
-                      <span>Templates</span>
-                    </div>
-                    <div>
-                      <b style={{ color: 'var(--success)' }}>{tm.passNodes}</b>
-                      <span>Passed</span>
-                    </div>
-                    <div>
-                      <b style={{ color: 'var(--critical)' }}>{tm.failNodes}</b>
-                      <span>Failed</span>
-                    </div>
-                  </div>
-                </div>
-                <button
-                  className="btn small"
-                  style={{ width: '100%', marginTop: 10 }}
-                  onClick={() => setExpandedTeamId(expandedTeamId === tm.id ? null : tm.id)}
-                >
-                  {expandedTeamId === tm.id ? 'Hide templates' : `View ${tm.templateCount} template${tm.templateCount === 1 ? '' : 's'}`}
-                </button>
-                {expandedTeamId === tm.id && (
-                  <div
-                    style={{
-                      marginTop: 10,
-                      borderTop: '1px solid var(--border)',
-                      paddingTop: 10,
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 8,
-                    }}
-                  >
-                    {tm.templates.length === 0 ? (
-                      <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>No templates assigned to this team yet.</div>
-                    ) : (
-                      tm.templates.map((t) => (
-                        <Link key={t.id} to={`/templates/${t.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
-                            <span className={`status ${statusClass(t.status)}`} style={{ fontSize: 11 }}>
-                              {t.status === 'Success' ? '●' : t.status === 'Failed' ? '●' : '○'}
-                            </span>
-                            <span style={{ flex: 1, fontWeight: 600 }}>{t.name}</span>
-                            <span style={{ color: 'var(--success)' }}>{t.passNodes}✓</span>
-                            <span style={{ color: 'var(--critical)' }}>{t.failNodes}✗</span>
-                            <span style={{ color: 'var(--text-faint)' }}>
-                              {t.testedNodes}/{t.totalNodes}
-                            </span>
-                          </div>
-                        </Link>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
+                      }
+                    : undefined
+                }
+                deleteNoun="team"
+                emptyTemplatesLabel="No templates assigned to this team yet."
+              />
             ))}
           </div>
         )}
@@ -468,8 +404,8 @@ export default function DashboardPage() {
             <span className="eyebrow">Group rollup</span>
             <h2>Regression groups</h2>
             <p>
-              Your own sets of tracked templates — add a template to a group from its own page. A node counts toward
-              progress once it's been tested, pass or fail.
+              Your own sets of tracked templates — add a template to a group from its own page. Pass rate counts only
+              successful nodes; Templates run counts anything that's been run at all, pass or fail.
             </p>
           </div>
         </div>
@@ -478,81 +414,23 @@ export default function DashboardPage() {
         ) : (
           <div className="cloud-row" style={{ gridTemplateColumns: `repeat(${Math.max(groupDash.length, 1)}, 1fr)` }}>
             {groupDash.map((g) => (
-              <div className="card cloud-card" key={g.id}>
-                <div className="cc-top" style={{ justifyContent: 'space-between' }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span className="cloud-dot" style={{ background: getGroupColor(g.name), width: 10, height: 10 }} />
-                    {g.name}
-                  </span>
-                  {isAdmin && (
-                    <button
-                      className="icon-btn"
-                      title="Delete group (templates stay tracked)"
-                      onClick={() => {
+              <RollupCard
+                key={g.id}
+                rollup={g}
+                cycleStartedAt={rollupCycle.startedAt}
+                cycleClosedAt={rollupCycle.closedAt}
+                expanded={expandedGroupId === g.id}
+                onToggleExpand={() => setExpandedGroupId(expandedGroupId === g.id ? null : g.id)}
+                onDelete={
+                  isAdmin
+                    ? () => {
                         if (confirm(`Delete group "${g.name}"? Templates stay tracked — this only removes the grouping.`)) deleteGroup(g.id)
-                      }}
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-                <div className="cc-body">
-                  <Donut percent={g.pct} size={88} strokeWidth={9} color={getGroupColor(g.name)} />
-                  <div className="cc-stats">
-                    <div>
-                      <b>{g.templateCount}</b>
-                      <span>Templates</span>
-                    </div>
-                    <div>
-                      <b style={{ color: 'var(--success)' }}>{g.passNodes}</b>
-                      <span>Passed</span>
-                    </div>
-                    <div>
-                      <b style={{ color: 'var(--critical)' }}>{g.failNodes}</b>
-                      <span>Failed</span>
-                    </div>
-                  </div>
-                </div>
-                <button
-                  className="btn small"
-                  style={{ width: '100%', marginTop: 10 }}
-                  onClick={() => setExpandedGroupId(expandedGroupId === g.id ? null : g.id)}
-                >
-                  {expandedGroupId === g.id ? 'Hide templates' : `View ${g.templateCount} template${g.templateCount === 1 ? '' : 's'}`}
-                </button>
-                {expandedGroupId === g.id && (
-                  <div
-                    style={{
-                      marginTop: 10,
-                      borderTop: '1px solid var(--border)',
-                      paddingTop: 10,
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 8,
-                    }}
-                  >
-                    {g.templates.length === 0 ? (
-                      <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>No templates in this group yet.</div>
-                    ) : (
-                      g.templates.map((t) => (
-                        <Link key={t.id} to={`/templates/${t.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
-                            <span className={`status ${statusClass(t.status)}`} style={{ fontSize: 11 }}>
-                              {t.status === 'Success' ? '●' : t.status === 'Failed' ? '●' : '○'}
-                            </span>
-                            <span style={{ flex: 1, fontWeight: 600 }}>{t.name}</span>
-                            <span style={{ color: 'var(--success)' }}>{t.passNodes}✓</span>
-                            <span style={{ color: 'var(--critical)' }}>{t.failNodes}✗</span>
-                            <span style={{ color: 'var(--text-faint)' }}>
-                              {t.testedNodes}/{t.totalNodes}
-                            </span>
-                          </div>
-                        </Link>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
+                      }
+                    : undefined
+                }
+                deleteNoun="group"
+                emptyTemplatesLabel="No templates in this group yet."
+              />
             ))}
           </div>
         )}
