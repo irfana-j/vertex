@@ -212,6 +212,7 @@ export interface StoreState {
   deleteTemplate: (id: string) => void
   syncJobResults: (id: string, options?: { limit?: number }) => Promise<SyncResult>
   syncAllTemplates: () => Promise<SyncResult>
+  pullAllRunsIntoActiveCycle: () => Promise<{ templatesTouched: number; runsReassigned: number }>
 
   logTicket: (templateId: string, ticketData: NewTicketInput) => Promise<void>
   raiseTicketForNode: (templateId: string, input: RaiseTicketInput, organization: string) => Promise<void>
@@ -586,6 +587,43 @@ export const useStore = create<StoreState>()(
         }
         set({ lastAutoSyncAt: Date.now() })
         return { added, updated }
+      },
+
+      // A one-time admin action for bringing existing history into a
+      // freshly started cycle: a run's cycleId is normally resolved from
+      // its own real finish timestamp against each cycle's time window
+      // (correct for ongoing use — a job really did happen when it
+      // happened), but that means a template's older runs stay attributed
+      // to whichever cycle they actually ran in, even after starting a new
+      // one. Right after standing this app up (or onboarding a team) that
+      // reads as "nothing's been run yet" for templates that very much
+      // have history — just not in the brand-new cycle. This re-syncs
+      // everything from Symphony, then force-stamps every run (regardless
+      // of when it actually happened) onto whichever cycle is active right
+      // now. Running it again later would do the same thing again — it's
+      // meant to be used once, deliberately, not left as part of a normal
+      // workflow.
+      pullAllRunsIntoActiveCycle: async () => {
+        await get().syncAllTemplates()
+        const activeCycleId = get().activeCycleId
+        if (!activeCycleId) return { templatesTouched: 0, runsReassigned: 0 }
+        let templatesTouched = 0
+        let runsReassigned = 0
+        set((s) => ({
+          templates: s.templates.map((t) => {
+            if (!t.runHistory.some((r) => r.cycleId !== activeCycleId)) return t
+            templatesTouched++
+            return {
+              ...t,
+              runHistory: t.runHistory.map((r) => {
+                if (r.cycleId === activeCycleId) return r
+                runsReassigned++
+                return { ...r, cycleId: activeCycleId }
+              }),
+            }
+          }),
+        }))
+        return { templatesTouched, runsReassigned }
       },
 
       // A ticket is logged AFTER you know the result — either against a

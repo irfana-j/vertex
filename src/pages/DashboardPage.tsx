@@ -218,6 +218,10 @@ export default function DashboardPage() {
     }
   }
 
+  const pullAllRunsIntoActiveCycle = useStore((s) => s.pullAllRunsIntoActiveCycle)
+  const [pulling, setPulling] = useState(false)
+  const [pullMsg, setPullMsg] = useState<string | null>(null)
+
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [importMsg, setImportMsg] = useState<string | null>(null)
 
@@ -255,6 +259,31 @@ export default function DashboardPage() {
       setImportMsg(`Import failed: ${err instanceof Error ? err.message : String(err)}`)
     }
     setTimeout(() => setImportMsg(null), 6000)
+  }
+
+  const handlePullAllIntoCycle = async () => {
+    if (
+      !confirm(
+        `This re-syncs every tracked template from Symphony and stamps ALL of their job history onto the "${selectedCycle?.label}" cycle, regardless of when each job actually ran. Meant for a one-time pull right after starting a fresh cycle — running it again later will do the same thing again. Continue?`
+      )
+    ) {
+      return
+    }
+    setPulling(true)
+    setPullMsg(null)
+    try {
+      const { templatesTouched, runsReassigned } = await pullAllRunsIntoActiveCycle()
+      setPullMsg(
+        runsReassigned > 0
+          ? `Pulled ${runsReassigned} job(s) across ${templatesTouched} template(s) into "${selectedCycle?.label}".`
+          : 'Nothing to pull in — every run is already in this cycle.'
+      )
+    } catch (err) {
+      setPullMsg(`Failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setPulling(false)
+      setTimeout(() => setPullMsg(null), 8000)
+    }
   }
 
   return (
@@ -308,10 +337,23 @@ export default function DashboardPage() {
               <input ref={fileInputRef} type="file" accept="application/json" style={{ display: 'none' }} onChange={handleImportFile} />
             </>
           )}
+          {isAdmin && !isViewingHistory && (
+            <button
+              className="btn small"
+              title="One-time: pull every synced job into this cycle regardless of when it actually ran"
+              disabled={pulling}
+              onClick={handlePullAllIntoCycle}
+            >
+              {pulling ? 'Pulling…' : '⟳ Pull all jobs into this cycle'}
+            </button>
+          )}
         </div>
       </div>
       {importMsg && (
         <p style={{ marginTop: -6, marginBottom: 12, fontSize: 12.5, color: 'var(--primary-dark)', fontWeight: 600 }}>{importMsg}</p>
+      )}
+      {pullMsg && (
+        <p style={{ marginTop: -6, marginBottom: 12, fontSize: 12.5, color: 'var(--primary-dark)', fontWeight: 600 }}>{pullMsg}</p>
       )}
 
       {isViewingHistory && (
