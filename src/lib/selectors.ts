@@ -306,11 +306,13 @@ export function computeDashboard(
 const REGRESSION_BUDGET_MS = 14 * day
 
 // Shared by computeCustomGroupDashboard and computeTeamDashboard below.
-// `pct` is a pass rate — passed nodes over TESTED nodes, not total — so it
-// answers "of what's run so far, how much is actually passing," separate
-// from whether everything has been run at all (that's templatesRunPct
-// below). A node that hasn't run yet doesn't drag this down; a failure
-// does — that's the whole point of this bar.
+// `pct` is a success rate — passed nodes over ALL nodes in the group/team
+// (every node in every member template, run or not), not just the ones
+// tested so far. A node that hasn't run yet, or that failed, both count
+// against it exactly the same as each other: neither is "passing" yet.
+// That's deliberate — with only a sliver of a large group actually
+// exercised, this bar should read as barely-started, not as a deceptively
+// high rate computed against a tiny tested-so-far denominator.
 function computeMembersRollup(id: string, name: string, members: Template[], cycle: Cycle): GroupDashboard {
   const cycleId = cycle.id
   let totalNodes = 0
@@ -338,7 +340,7 @@ function computeMembersRollup(id: string, name: string, members: Template[], cyc
       passNodes: pass,
       failNodes: fail,
       testedNodes: pass + fail,
-      pct: pass + fail ? Math.round((pass / (pass + fail)) * 100) : 0,
+      pct: scenarioNodes.length ? Math.round((pass / scenarioNodes.length) * 100) : 0,
       status: getStatus(t, cycleId),
     }
   })
@@ -377,7 +379,7 @@ function computeMembersRollup(id: string, name: string, members: Template[], cyc
     testedNodes,
     passNodes,
     failNodes,
-    pct: testedNodes ? Math.round((passNodes / testedNodes) * 100) : 0,
+    pct: totalNodes ? Math.round((passNodes / totalNodes) * 100) : 0,
     templatesRunCount,
     templatesRunPct: members.length ? Math.round((templatesRunCount / members.length) * 100) : 0,
     finishedAt,

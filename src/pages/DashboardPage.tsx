@@ -404,8 +404,8 @@ export default function DashboardPage() {
             <span className="eyebrow">Group rollup</span>
             <h2>Regression groups</h2>
             <p>
-              Your own sets of tracked templates — add a template to a group from its own page. Pass rate counts only
-              successful nodes; Templates run counts anything that's been run at all, pass or fail.
+              Your own sets of tracked templates — add a template to a group from its own page. Pass rate is successful
+              nodes over every node in the group; Templates run counts anything that's been run at all, pass or fail.
             </p>
           </div>
         </div>

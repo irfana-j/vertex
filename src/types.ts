@@ -309,10 +309,10 @@ export interface GroupDashboard {
   testedNodes: number
   passNodes: number
   failNodes: number
-  // Pass rate: passed nodes over TESTED nodes (not total) — a node that
-  // hasn't run yet doesn't count against this; a failure does. Coverage
-  // (has everything even been run) is a separate question — see
-  // templatesRunPct below.
+  // Success rate: passed nodes over ALL nodes (every node in every member
+  // template, run or not) — an untested node counts the same as a failed
+  // one here, neither is "passing" yet. Coverage (has everything even been
+  // run) is a separate question — see templatesRunPct below.
   pct: number
   // How many of this group/team's templates have been run at all this
   // cycle — regardless of whether every node in them passed or failed.
