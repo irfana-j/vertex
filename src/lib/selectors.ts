@@ -303,7 +303,7 @@ export function computeDashboard(
 // The backend-only budget for a whole regression cycle — never surfaced as
 // a countdown anywhere in the UI, only used to flag a group/team red once
 // it's been blown past. Changing this is a one-line edit, not a setting.
-const REGRESSION_BUDGET_MS = 14 * day
+const REGRESSION_BUDGET_MS = 4 * day
 
 // Shared by computeCustomGroupDashboard and computeTeamDashboard below.
 // `pct` is a success rate — passed nodes over ALL nodes in the group/team
