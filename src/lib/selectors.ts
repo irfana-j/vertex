@@ -93,9 +93,15 @@ export function wasExecutedInCycle(template: Template, cycleId: string): boolean
   return getExecutedCount(template, cycleId) > 0
 }
 
+// The chronologically latest run in this cycle, by the job's own finish
+// timestamp — NOT just the last element of runHistory. Sync can add or
+// update runs out of timestamp order (a backfilled older job synced after
+// a newer one, a re-synced still-running job updated in place), so array
+// position alone isn't reliable evidence of which run is actually latest.
 export function getLastRun(template: Template, cycleId: string): Run | null {
   const runs = getRunsInCycle(template, cycleId)
-  return runs.length ? runs[runs.length - 1] : null
+  if (!runs.length) return null
+  return runs.reduce((latest, r) => (r.timestamp > latest.timestamp ? r : latest), runs[0])
 }
 
 export function getStatus(template: Template, cycleId: string): string {
@@ -109,10 +115,14 @@ export function getFailureReason(template: Template, cycleId: string): string | 
   return last?.failureReason || null
 }
 
-// Every node id that appeared with a result (pass or fail) in any job
-// synced this cycle — a node reached by a failing job still counts as
-// "ran," it just ran and failed. A node the job never got to (stopped
-// earlier in the chain) has no entry and doesn't count yet.
+// Every node id the template's LATEST job this cycle actually reached —
+// not a union across every job synced this cycle. Merging across jobs used
+// to let a node a re-run never got back to (because it failed earlier in
+// the chain, or the template changed) keep showing its pass from an older
+// job — quietly hiding a real regression behind stale data. The latest job
+// is the true current state of this template; an older job's results stop
+// counting the moment a newer one exists, exactly the way Symphony's own
+// "latest run" already works.
 export function getExecutedScenarioNodeIds(template: Template, cycleId: string): Set<string> {
   // Only count ids that are actually scenario nodes — a job's results can
   // include config nodes too (e.g. "Global variables" reaching "Finished"),
@@ -120,26 +130,18 @@ export function getExecutedScenarioNodeIds(template: Template, cycleId: string):
   // the count past the template's own scenario node total.
   const scenarioIds = new Set(getScenarioNodes(template).map((n) => n.id))
   const ids = new Set<string>()
-  getRunsInCycle(template, cycleId).forEach((run) => {
-    Object.keys(run.results || {}).forEach((nodeId) => {
-      if (scenarioIds.has(nodeId)) ids.add(nodeId)
-    })
+  const last = getLastRun(template, cycleId)
+  Object.keys(last?.results || {}).forEach((nodeId) => {
+    if (scenarioIds.has(nodeId)) ids.add(nodeId)
   })
   return ids
 }
 
-// Per-node pass/fail, merged across every run in the cycle with later runs
-// overriding earlier ones — so a node that failed once then passed on a
-// retry within the same cycle reads as passing, not failing.
+// Per-node pass/fail from the latest job this cycle ONLY — see
+// getExecutedScenarioNodeIds above for why this isn't a merge across every
+// run in the cycle anymore.
 export function getNodeResultsInCycle(template: Template, cycleId: string): Record<string, NodeResult> {
-  const merged: Record<string, NodeResult> = {}
-  const runs = [...getRunsInCycle(template, cycleId)].sort((a, b) => a.timestamp - b.timestamp)
-  runs.forEach((run) => {
-    Object.entries(run.results || {}).forEach(([nodeId, result]) => {
-      merged[nodeId] = result
-    })
-  })
-  return merged
+  return getLastRun(template, cycleId)?.results || {}
 }
 
 // The single most recent job for this template, regardless of cycle —
