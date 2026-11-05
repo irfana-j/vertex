@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { getState, setState, type AppState } from './db.js'
 import { clearSessionCookie, getSessionFromRequest, getSessionToken, login, logout, requireAdmin, requireAuth, setSessionCookie } from './auth.js'
 import { proxySymphonyAuth, proxySymphonyDnd } from './symphonyProxy.js'
-import { deleteIntegration, forwardCreateWorkItem, forwardGetWorkItem, forwardPostComment, listIntegrations, upsertIntegration, testConnection } from './azureDevOps.js'
+import { deleteIntegration, forwardCreateWorkItem, forwardGetWorkItem, forwardPostComment, forwardUploadAttachment, listIntegrations, upsertIntegration, testConnection } from './azureDevOps.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -100,6 +100,16 @@ app.post('/api/azuredevops/:organization/workitems/:id/comment', requireAdmin, f
 // Raises a brand-new work item on the board — the "Raise ticket" button
 // next to a failed node's log. Write action, so admin-only like the rest.
 app.post('/api/azuredevops/:organization/workitems', requireAdmin, forwardCreateWorkItem)
+// Uploads the generated failure-report PDF before the work item exists —
+// raw binary body, not JSON, so this route gets its own body parser instead
+// of the app-wide express.json() above (which skips non-JSON content types
+// and leaves the stream untouched for this to read).
+app.post(
+  '/api/azuredevops/:organization/attachments',
+  requireAdmin,
+  express.raw({ type: '*/*', limit: '15mb' }),
+  forwardUploadAttachment
+)
 
 app.use(express.static(CLIENT_DIST))
 app.get('*', (_req, res) => {

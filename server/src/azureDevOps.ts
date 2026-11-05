@@ -167,6 +167,13 @@ export async function forwardCreateWorkItem(req: Request, res: Response): Promis
   }
   const title = String(req.body?.title ?? '').trim()
   const description = String(req.body?.description ?? '')
+  // Set when the client already uploaded a failure-report document (see
+  // forwardUploadAttachment below) — linked onto the work item at creation
+  // time via an AttachmentLink relation, so the ticket shows up with its
+  // report attached from the moment it's opened rather than needing a
+  // second edit.
+  const attachmentUrl = typeof req.body?.attachmentUrl === 'string' ? req.body.attachmentUrl : null
+  const attachmentName = typeof req.body?.attachmentName === 'string' ? req.body.attachmentName : 'Regression failure report'
   if (!title) {
     res.status(400).json({ error: 'A title is required to raise a ticket.' })
     return
@@ -192,6 +199,9 @@ export async function forwardCreateWorkItem(req: Request, res: Response): Promis
           body: JSON.stringify([
             { op: 'add', path: '/fields/System.Title', value: title },
             { op: 'add', path: '/fields/System.Description', value: logToHtml(description) },
+            ...(attachmentUrl
+              ? [{ op: 'add', path: '/relations/-', value: { rel: 'AttachmentLink', url: attachmentUrl, attributes: { comment: attachmentName } } }]
+              : []),
           ]),
         }
       )
@@ -212,6 +222,46 @@ export async function forwardCreateWorkItem(req: Request, res: Response): Promis
       if (!typeNotFound) break
     }
     res.status(lastError?.status ?? 502).json({ error: lastError?.message ?? 'Azure DevOps create work item failed.' })
+  } catch (err) {
+    res.status(502).json({ error: `Azure DevOps upstream request failed: ${String(err)}` })
+  }
+}
+
+// Uploads a file (the generated failure-report PDF) to Azure DevOps's own
+// attachment store and hands back the reference `url` the caller then
+// passes to forwardCreateWorkItem as `attachmentUrl` — Azure DevOps treats
+// attaching as a two-step process (upload the bytes, then link the result
+// onto a work item by relation), not a single multipart create call. The
+// route registers this with a raw body parser (see index.ts), so `req.body`
+// here is the file's raw bytes, not JSON.
+export async function forwardUploadAttachment(req: Request, res: Response): Promise<void> {
+  const config = await findIntegration(req.params.organization)
+  if (!config || !config.project || !config.personalAccessToken) {
+    res.status(400).json({ error: `Azure DevOps organization "${req.params.organization}" is not configured.` })
+    return
+  }
+  const fileName = String(req.query.fileName || 'regression-failure-report.pdf')
+  const body = req.body
+  if (!Buffer.isBuffer(body) || body.length === 0) {
+    res.status(400).json({ error: 'No file content received to attach.' })
+    return
+  }
+  try {
+    const upstream = await fetchAdoWithRetry(
+      `https://dev.azure.com/${config.organization}/${encodeURIComponent(config.project)}/_apis/wit/attachments?fileName=${encodeURIComponent(fileName)}&api-version=7.1`,
+      {
+        method: 'POST',
+        headers: { Authorization: authHeader(config.personalAccessToken), 'Content-Type': 'application/octet-stream' },
+        body: new Uint8Array(body),
+      }
+    )
+    if (!upstream.ok) {
+      const errBody = await upstream.text().catch(() => '')
+      res.status(upstream.status).json({ error: `Azure DevOps attachment upload failed: ${upstream.status}${errBody ? ` — ${errBody.slice(0, 300)}` : ''}` })
+      return
+    }
+    const data = (await upstream.json()) as { id: string; url: string }
+    res.json({ url: data.url })
   } catch (err) {
     res.status(502).json({ error: `Azure DevOps upstream request failed: ${String(err)}` })
   }

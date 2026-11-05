@@ -5,7 +5,8 @@ import { createNode, createEdge } from '../lib/nodeFactory'
 import { autoLayout } from '../lib/layout'
 import { getSymphonyTemplate, listJobsForTemplate, getJobDetail } from '../lib/symphonyConnector'
 import { resolveCycleForTimestamp } from '../lib/selectors'
-import { createAzureDevOpsWorkItem, getTicketStatus, postFollowUpComment, ticketUrl } from '../lib/devopsConnector'
+import { createAzureDevOpsWorkItem, getTicketStatus, postFollowUpComment, ticketUrl, uploadAzureDevOpsAttachment } from '../lib/devopsConnector'
+import { buildFailureReportPdf } from '../lib/ticketReport'
 import { createSeedData } from './seed'
 import type {
   Cycle,
@@ -670,7 +671,45 @@ export const useStore = create<StoreState>()(
       // first and only adds it locally once that's confirmed, so a failed
       // create never leaves a fake, unlinked ticket behind.
       raiseTicketForNode: async (templateId, input, organization) => {
-        const created = await createAzureDevOpsWorkItem(organization, input.title, input.description)
+        const template = get().templates.find((t) => t.id === templateId)
+        const raisedFromRun = input.runId !== null ? (template?.runHistory.find((r) => r.id === input.runId) ?? null) : null
+        const node = template?.nodes.find((n) => n.id === input.nodeId) ?? null
+        const nodeResult = raisedFromRun && input.nodeId ? raisedFromRun.results[input.nodeId] : undefined
+        const team = template?.teamId ? (get().teams.find((tm) => tm.id === template.teamId) ?? null) : null
+
+        // Every ticket raised from a node failure carries which team owns
+        // the template it came from, right in the title and description —
+        // "[Cloud] ..." / "Team: Cloud" — so triage doesn't need this app
+        // open just to route the ticket to the right team.
+        const title = team ? `[${team.name}] ${input.title}` : input.title
+        const description = `Team: ${team?.name ?? 'Unassigned'}\n\n${input.description}`
+
+        // Best-effort: a failed PDF build or upload shouldn't block raising
+        // the ticket itself — the node's log is already in the description
+        // either way, the PDF is a bonus attachment.
+        let attachment: { url: string; name: string } | undefined
+        try {
+          const pdf = buildFailureReportPdf({
+            teamName: team?.name ?? null,
+            templateName: template?.symphonyTemplateName ?? '',
+            symphonyTemplateId: template?.symphonyTemplateId ?? '',
+            jobId: input.runId,
+            runTimestamp: raisedFromRun?.timestamp ?? null,
+            nodeLabel: node?.data.label ?? input.scenario ?? '',
+            nodeService: node?.data.service ?? null,
+            nodeOperation: node?.data.operation ?? null,
+            scenario: input.scenario || node?.data.label || '',
+            reason: nodeResult?.reason ?? null,
+            log: nodeResult?.log ?? input.description,
+          })
+          const fileName = `regression-failure-${templateId}-${input.nodeId || 'node'}.pdf`
+          const uploaded = await uploadAzureDevOpsAttachment(organization, fileName, pdf)
+          attachment = { url: uploaded.url, name: fileName }
+        } catch {
+          // Raise the ticket without the attachment — see comment above.
+        }
+
+        const created = await createAzureDevOpsWorkItem(organization, title, description, attachment)
         const newId = uid('ticket')
         set((s) => ({
           templates: s.templates.map((t) => {
@@ -691,7 +730,7 @@ export const useStore = create<StoreState>()(
               boardState: created.boardState,
               assignee: '',
               scenario: input.scenario,
-              summary: input.title,
+              summary: title,
               url: created.url,
               lastActivityAt: now,
               createdAt: now,

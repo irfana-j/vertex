@@ -390,7 +390,8 @@ export default function DashboardPage() {
             <div className="label">Open tickets</div>
             <div className="value warn">{dash.openTicketsCount}</div>
             <div className="foot">
-              {dash.staleTicketsCount > 0 ? `${dash.staleTicketsCount} stale, needing follow-up` : 'none stale'}
+              {dash.allTickets.length} total
+              {dash.staleTicketsCount > 0 ? ` · ${dash.staleTicketsCount} stale, needing follow-up` : ''}
             </div>
           </div>
           <div className="card kpi">
@@ -699,8 +700,12 @@ export default function DashboardPage() {
         <div className="section-head" style={{ alignItems: 'center' }}>
           <div>
             <span className="eyebrow">Ticket rollup</span>
-            <h2>Open tickets across templates</h2>
-            <p>Status syncs live from the board — stays open across cycles until resolved there.</p>
+            <h2>Tickets across templates ({dash.allTickets.length})</h2>
+            <p>
+              {dash.openTicketsCount} open
+              {dash.allTickets.length - dash.openTicketsCount > 0 ? `, ${dash.allTickets.length - dash.openTicketsCount} closed` : ''} —
+              status syncs live from the board; closed tickets stay listed here instead of disappearing.
+            </p>
           </div>
           {isAdmin && (
             <button className="btn small" onClick={handleSyncAllTickets} disabled={syncingAllTickets}>
@@ -711,11 +716,13 @@ export default function DashboardPage() {
         {ticketActionError && (
           <p style={{ fontSize: 12.5, color: 'var(--critical)', marginBottom: 10 }}>{ticketActionError}</p>
         )}
-        {dash.allTickets.filter(isTicketOpen).length === 0 ? (
-          <div className="card empty-state">No open tickets.</div>
+        {dash.allTickets.length === 0 ? (
+          <div className="card empty-state">No tickets yet.</div>
         ) : (
           <div className="ticket-grid">
-            {dash.allTickets.filter(isTicketOpen).map((t) => {
+            {[...dash.allTickets]
+              .sort((a, b) => Number(isTicketOpen(b)) - Number(isTicketOpen(a)) || b.lastActivityAt - a.lastActivityAt)
+              .map((t) => {
               const stale = isTicketStale(t)
               const days = daysSinceActivity(t)
               const busy = busyTicketId === t.id

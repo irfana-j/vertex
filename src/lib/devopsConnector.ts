@@ -127,17 +127,46 @@ async function getAzureDevOpsWorkItemStatus(organization: string, ticketId: stri
   }
 }
 
+// Uploads a file (the generated failure-report PDF) to Azure DevOps's
+// attachment store ahead of creating the work item, so the ticket can link
+// it in the very same create call — see forwardUploadAttachment's own
+// comment for why this is a separate upload-then-link step rather than one
+// request.
+export async function uploadAzureDevOpsAttachment(organization: string, fileName: string, file: Blob): Promise<{ url: string }> {
+  const res = await fetch(`/api/azuredevops/${encodeURIComponent(organization)}/attachments?fileName=${encodeURIComponent(fileName)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    credentials: 'include',
+    body: file,
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null
+    throw new Error(body?.error || `Failed to upload attachment (${res.status})`)
+  }
+  return res.json()
+}
+
 // Creates a brand-new work item on the board — the "Raise ticket" button
 // next to a failed node's log calls this (never against Jira, which this
 // app only reads from — see the module comment above). New tickets start
 // 'Open' since a work item has just been created on the board, not
-// resolved there.
-export async function createAzureDevOpsWorkItem(organization: string, title: string, description: string): Promise<CreatedWorkItem> {
+// resolved there. `attachment` (already-uploaded via uploadAzureDevOpsAttachment
+// above) gets linked onto the work item in this same create call when given.
+export async function createAzureDevOpsWorkItem(
+  organization: string,
+  title: string,
+  description: string,
+  attachment?: { url: string; name: string }
+): Promise<CreatedWorkItem> {
   const res = await fetch(`/api/azuredevops/${encodeURIComponent(organization)}/workitems`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ title, description }),
+    body: JSON.stringify({
+      title,
+      description,
+      ...(attachment ? { attachmentUrl: attachment.url, attachmentName: attachment.name } : {}),
+    }),
   })
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null
