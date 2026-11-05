@@ -1,6 +1,229 @@
 import { useEffect, useState } from 'react'
 import { deleteAzureDevOpsIntegration, listAzureDevOpsIntegrations, testAzureDevOpsIntegration, upsertAzureDevOpsIntegration } from '../lib/devopsConnector'
-import type { AzureDevOpsIntegrationEntry } from '../types'
+import * as api from '../lib/api'
+import { useStore } from '../store/useStore'
+import { useAuthStore } from '../store/useAuthStore'
+import { ALL_ROLES, isTeamScopedRole, roleLabel } from '../lib/permissions'
+import type { AppUser, AzureDevOpsIntegrationEntry, Role } from '../types'
+
+function UsersPanel() {
+  const teams = useStore((s) => s.teams)
+  const currentUserId = useAuthStore((s) => s.username) // just for the "can't delete yourself" hint below
+  const [users, setUsers] = useState<AppUser[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [role, setRole] = useState<Role>('team_editor')
+  const [teamIds, setTeamIds] = useState<string[]>([])
+  const [creating, setCreating] = useState(false)
+
+  const [resetId, setResetId] = useState<string | null>(null)
+  const [resetPassword, setResetPassword] = useState('')
+
+  const refresh = () => api.listUsers().then(setUsers).catch((err) => setError(err instanceof Error ? err.message : String(err)))
+
+  useEffect(() => {
+    refresh()
+  }, [])
+
+  const handleCreate = async () => {
+    setError(null)
+    if (!username.trim() || !password) {
+      setError('Username and password are required.')
+      return
+    }
+    setCreating(true)
+    try {
+      await api.createUser({ username: username.trim(), password, role, teamIds: isTeamScopedRole(role) ? teamIds : [] })
+      setUsername('')
+      setPassword('')
+      setRole('team_editor')
+      setTeamIds([])
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const handleRoleChange = async (user: AppUser, newRole: Role) => {
+    await api.updateUser(user.id, { role: newRole, teamIds: isTeamScopedRole(newRole) ? user.teamIds : [] })
+    await refresh()
+  }
+
+  const handleToggleTeam = async (user: AppUser, teamId: string) => {
+    const next = user.teamIds.includes(teamId) ? user.teamIds.filter((id) => id !== teamId) : [...user.teamIds, teamId]
+    await api.updateUser(user.id, { teamIds: next })
+    await refresh()
+  }
+
+  const handleResetPassword = async (userId: string) => {
+    if (!resetPassword) return
+    await api.updateUser(userId, { password: resetPassword })
+    setResetId(null)
+    setResetPassword('')
+  }
+
+  const handleDelete = async (user: AppUser) => {
+    if (!confirm(`Delete user "${user.username}"? They'll be signed out immediately.`)) return
+    try {
+      await api.deleteUser(user.id)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  return (
+    <div className="card panel" style={{ maxWidth: 680, marginTop: 16 }}>
+      <h3>Users</h3>
+      <p className="p-sub">
+        Real named accounts. Admin and Reader see everything; Team Admin/Editor/Reader only ever see the team(s) they're
+        assigned to below — enforced on the server, not just hidden in this UI.
+      </p>
+
+      <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr', marginTop: 10, alignItems: 'end' }}>
+        <div className="field">
+          <label>Username</label>
+          <input className="ctrl" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. priya.cloud" />
+        </div>
+        <div className="field">
+          <label>Password</label>
+          <input className="ctrl" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+        </div>
+        <div className="field">
+          <label>Role</label>
+          <select className="ctrl" value={role} onChange={(e) => setRole(e.target.value as Role)}>
+            {ALL_ROLES.map((r) => (
+              <option key={r} value={r}>
+                {roleLabel(r)}
+              </option>
+            ))}
+          </select>
+        </div>
+        {isTeamScopedRole(role) && (
+          <div className="field full" style={{ gridColumn: '1 / -1' }}>
+            <label>Team(s)</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {teams.length === 0 && <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>No teams exist yet — create one from a template's page first.</span>}
+              {teams.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={`uc-chip${teamIds.includes(t.id) ? ' on' : ''}`}
+                  onClick={() => setTeamIds((ids) => (ids.includes(t.id) ? ids.filter((id) => id !== t.id) : [...ids, t.id]))}
+                >
+                  {t.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {error && <p style={{ fontSize: 12.5, marginTop: 10, color: 'var(--critical)' }}>{error}</p>}
+
+      <div style={{ marginTop: 16 }}>
+        <button className="btn small primary" onClick={handleCreate} disabled={creating}>
+          {creating ? 'Creating…' : '+ Add user'}
+        </button>
+      </div>
+
+      {users && users.length > 0 && (
+        <div className="table-wrap" style={{ marginTop: 20 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Team(s)</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.id}>
+                  <td style={{ fontWeight: 700 }}>{u.username}</td>
+                  <td>
+                    <select className="ctrl" style={{ fontSize: 12.5 }} value={u.role} onChange={(e) => handleRoleChange(u, e.target.value as Role)}>
+                      {ALL_ROLES.map((r) => (
+                        <option key={r} value={r}>
+                          {roleLabel(r)}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>
+                    {isTeamScopedRole(u.role) ? (
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                        {teams.map((t) => (
+                          <button
+                            key={t.id}
+                            type="button"
+                            className={`uc-chip${u.teamIds.includes(t.id) ? ' on' : ''}`}
+                            style={{ fontSize: 11 }}
+                            onClick={() => handleToggleTeam(u, t.id)}
+                          >
+                            {t.name}
+                          </button>
+                        ))}
+                        {u.teamIds.length === 0 && <span style={{ fontSize: 11.5, color: 'var(--critical)' }}>No team assigned — sees nothing yet</span>}
+                      </div>
+                    ) : (
+                      <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>— (global)</span>
+                    )}
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                      {resetId === u.id ? (
+                        <>
+                          <input
+                            className="ctrl"
+                            type="password"
+                            placeholder="New password"
+                            style={{ width: 130, fontSize: 12 }}
+                            value={resetPassword}
+                            onChange={(e) => setResetPassword(e.target.value)}
+                          />
+                          <button className="btn small primary" onClick={() => handleResetPassword(u.id)}>
+                            Save
+                          </button>
+                          <button
+                            className="btn small"
+                            onClick={() => {
+                              setResetId(null)
+                              setResetPassword('')
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button className="btn small" onClick={() => setResetId(u.id)}>
+                          Reset password
+                        </button>
+                      )}
+                      <button
+                        className="icon-btn"
+                        title={u.username === currentUserId ? "You can't delete your own account" : `Delete ${u.username}`}
+                        disabled={u.username === currentUserId}
+                        onClick={() => handleDelete(u)}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function SettingsPage() {
   const [integrations, setIntegrations] = useState<AzureDevOpsIntegrationEntry[] | null>(null)
@@ -134,6 +357,8 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+
+      <UsersPanel />
     </div>
   )
 }

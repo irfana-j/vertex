@@ -302,11 +302,6 @@ export function computeDashboard(
   }
 }
 
-// The backend-only budget for a whole regression cycle — never surfaced as
-// a countdown anywhere in the UI, only used to flag a group/team red once
-// it's been blown past. Changing this is a one-line edit, not a setting.
-const REGRESSION_BUDGET_MS = 4 * day
-
 // Shared by computeCustomGroupDashboard and computeTeamDashboard below.
 // `pct` is a success rate — passed nodes over ALL nodes in the group/team
 // (every node in every member template, run or not), not just the ones
@@ -315,7 +310,11 @@ const REGRESSION_BUDGET_MS = 4 * day
 // That's deliberate — with only a sliver of a large group actually
 // exercised, this bar should read as barely-started, not as a deceptively
 // high rate computed against a tiny tested-so-far denominator.
-function computeMembersRollup(id: string, name: string, members: Template[], cycle: Cycle): GroupDashboard {
+// `budgetMs` is this group/team's own regression window, in milliseconds —
+// null means no deadline is tracked here, so isOverdue is always false.
+// Different teams can run on different schedules (see Team.regressionBudgetDays),
+// so this is no longer one fixed constant shared app-wide.
+function computeMembersRollup(id: string, name: string, members: Template[], cycle: Cycle, budgetMs: number | null): GroupDashboard {
   const cycleId = cycle.id
   let totalNodes = 0
   let passNodes = 0
@@ -371,7 +370,7 @@ function computeMembersRollup(id: string, name: string, members: Template[], cyc
     : null
 
   const elapsedMs = (cycle.closedAt ?? Date.now()) - cycle.startedAt
-  const isOverdue = members.length > 0 && finishedAt === null && elapsedMs > REGRESSION_BUDGET_MS
+  const isOverdue = members.length > 0 && finishedAt === null && budgetMs !== null && elapsedMs > budgetMs
 
   return {
     id,
@@ -393,14 +392,15 @@ function computeMembersRollup(id: string, name: string, members: Template[], cyc
 // Cumulative progress for each user-defined group (a set of tracked
 // templates the operator chose to track together, e.g. "Azure rollout") —
 // separate from Symphony's own group field. A template can sit in any
-// number of groups.
+// number of groups. Regression Groups don't carry their own deadline (only
+// Teams do — see computeTeamDashboard below), so these never show overdue.
 export function computeCustomGroupDashboard(templates: Template[], groups: RegressionGroup[], cycle: Cycle): GroupDashboard[] {
   const tracked = templates.filter(isRegressionTemplate)
   const byId = new Map(tracked.map((t) => [t.id, t]))
 
   return groups.map((g) => {
     const members = g.templateIds.map((id) => byId.get(id)).filter((t): t is Template => Boolean(t))
-    return computeMembersRollup(g.id, g.name, members, cycle)
+    return computeMembersRollup(g.id, g.name, members, cycle, null)
   })
 }
 
@@ -415,7 +415,8 @@ export function computeTeamDashboard(templates: Template[], teams: Team[], cycle
 
   return teams.map((team) => {
     const members = tracked.filter((t) => t.teamId === team.id)
-    return computeMembersRollup(team.id, team.name, members, cycle)
+    const budgetMs = team.regressionBudgetDays !== null ? team.regressionBudgetDays * day : null
+    return computeMembersRollup(team.id, team.name, members, cycle, budgetMs)
   })
 }
 

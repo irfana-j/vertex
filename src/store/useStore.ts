@@ -53,7 +53,7 @@ async function mapWithConcurrency<T, R>(items: T[], concurrency: number, fn: (it
 // and persist's own setItem call (triggered by that `set()`) is what pushes
 // the result to the backend. A viewer's PUT gets rejected (403, admin-only)
 // server-side — enforced there, not just by hiding buttons in the UI.
-const STORE_VERSION = 7
+const STORE_VERSION = 8
 
 interface PersistedState {
   templates: Template[]
@@ -203,6 +203,7 @@ export interface StoreState {
   renameTeam: (teamId: string, name: string) => void
   deleteTeam: (teamId: string) => void
   setTemplateTeam: (templateId: string, teamId: string | null) => void
+  setTeamRegressionBudget: (teamId: string, days: number | null) => void
 
   exportState: (cycleId?: string) => ExportPayload
   importState: (payload: unknown) => ImportResult
@@ -213,7 +214,6 @@ export interface StoreState {
   deleteTemplate: (id: string) => void
   syncJobResults: (id: string, options?: { limit?: number }) => Promise<SyncResult>
   syncAllTemplates: () => Promise<SyncResult>
-  pullAllRunsIntoActiveCycle: () => Promise<{ templatesTouched: number; runsReassigned: number }>
 
   logTicket: (templateId: string, ticketData: NewTicketInput) => Promise<void>
   raiseTicketForNode: (templateId: string, input: RaiseTicketInput, organization: string) => Promise<void>
@@ -259,7 +259,7 @@ export const useStore = create<StoreState>()(
       },
 
       createTeam: (name) => {
-        const newTeam: Team = { id: uid('team'), name: name.trim() || 'Untitled team' }
+        const newTeam: Team = { id: uid('team'), name: name.trim() || 'Untitled team', regressionBudgetDays: null }
         set((s) => ({ teams: [...s.teams, newTeam] }))
         return newTeam.id
       },
@@ -267,6 +267,14 @@ export const useStore = create<StoreState>()(
         const trimmed = name.trim()
         if (!trimmed) return
         set((s) => ({ teams: s.teams.map((tm) => (tm.id === teamId ? { ...tm, name: trimmed } : tm)) }))
+      },
+      // null clears the deadline entirely — that team's tile then only ever
+      // shows progress, never "Overdue". Each team runs this independently,
+      // so there's no shared app-wide value to fall back to.
+      setTeamRegressionBudget: (teamId, days) => {
+        set((s) => ({
+          teams: s.teams.map((tm) => (tm.id === teamId ? { ...tm, regressionBudgetDays: days !== null && days > 0 ? Math.round(days) : null } : tm)),
+        }))
       },
       // Deleting a team doesn't untrack its templates — same reasoning as
       // deleteGroup — it just clears their team assignment back to none.
@@ -346,7 +354,7 @@ export const useStore = create<StoreState>()(
               teamIdRemap.set(incoming.id, existing.id)
               return
             }
-            mergedTeams.push(incoming)
+            mergedTeams.push({ ...incoming, regressionBudgetDays: incoming.regressionBudgetDays ?? null })
             teamIdRemap.set(incoming.id, incoming.id)
           })
           const remapTeamId = (teamId: string | null) => (teamId ? (teamIdRemap.get(teamId) ?? null) : null)
@@ -588,43 +596,6 @@ export const useStore = create<StoreState>()(
         }
         set({ lastAutoSyncAt: Date.now() })
         return { added, updated }
-      },
-
-      // A one-time admin action for bringing existing history into a
-      // freshly started cycle: a run's cycleId is normally resolved from
-      // its own real finish timestamp against each cycle's time window
-      // (correct for ongoing use — a job really did happen when it
-      // happened), but that means a template's older runs stay attributed
-      // to whichever cycle they actually ran in, even after starting a new
-      // one. Right after standing this app up (or onboarding a team) that
-      // reads as "nothing's been run yet" for templates that very much
-      // have history — just not in the brand-new cycle. This re-syncs
-      // everything from Symphony, then force-stamps every run (regardless
-      // of when it actually happened) onto whichever cycle is active right
-      // now. Running it again later would do the same thing again — it's
-      // meant to be used once, deliberately, not left as part of a normal
-      // workflow.
-      pullAllRunsIntoActiveCycle: async () => {
-        await get().syncAllTemplates()
-        const activeCycleId = get().activeCycleId
-        if (!activeCycleId) return { templatesTouched: 0, runsReassigned: 0 }
-        let templatesTouched = 0
-        let runsReassigned = 0
-        set((s) => ({
-          templates: s.templates.map((t) => {
-            if (!t.runHistory.some((r) => r.cycleId !== activeCycleId)) return t
-            templatesTouched++
-            return {
-              ...t,
-              runHistory: t.runHistory.map((r) => {
-                if (r.cycleId === activeCycleId) return r
-                runsReassigned++
-                return { ...r, cycleId: activeCycleId }
-              }),
-            }
-          }),
-        }))
-        return { templatesTouched, runsReassigned }
       },
 
       // A ticket is logged AFTER you know the result — either against a
@@ -898,6 +869,15 @@ export const useStore = create<StoreState>()(
             ...state,
             teams: state.teams || [],
             templates: state.templates.map((t) => ({ ...t, teamId: t.teamId ?? null })),
+          }
+        }
+        // v8: each team now carries its own regression budget (replacing
+        // the one fixed, app-wide 2-week constant) — backfill as "no
+        // deadline tracked" rather than guessing a number for existing teams.
+        if (version < 8) {
+          state = {
+            ...state,
+            teams: (state.teams || []).map((tm) => ({ ...tm, regressionBudgetDays: tm.regressionBudgetDays ?? null })),
           }
         }
         return state

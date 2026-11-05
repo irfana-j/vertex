@@ -7,6 +7,11 @@ export type AuthStatus = 'checking' | 'anonymous' | 'authenticated'
 interface AuthState {
   status: AuthStatus
   role: Role | null
+  username: string | null
+  // Only meaningful for a team-scoped role (team_admin/team_editor/team_reader)
+  // — empty for the two global roles. See lib/permissions.ts for how this
+  // combines with `role` into actual permission checks.
+  teamIds: string[]
   error: string | null
   // /api/session itself never 401s — it always returns 200 with role:null
   // when there's no valid session, so a thrown error from fetchSession()
@@ -28,6 +33,8 @@ interface AuthState {
 export const useAuthStore = create<AuthState>((set) => ({
   status: 'checking',
   role: null,
+  username: null,
+  teamIds: [],
   error: null,
   sessionCheckFailed: false,
 
@@ -35,8 +42,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ sessionCheckFailed: false })
     const attempt = async (retriesLeft: number): Promise<void> => {
       try {
-        const { role } = await api.fetchSession()
-        set({ status: role ? 'authenticated' : 'anonymous', role, sessionCheckFailed: false })
+        const { role, username, teamIds } = await api.fetchSession()
+        set({ status: role ? 'authenticated' : 'anonymous', role, username: username ?? null, teamIds: teamIds ?? [], sessionCheckFailed: false })
       } catch {
         if (retriesLeft > 0) {
           await new Promise((resolve) => setTimeout(resolve, 600))
@@ -52,7 +59,12 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ error: null })
     try {
       const { role } = await api.login(username, password)
-      set({ status: 'authenticated', role })
+      // The login response only confirms the role — team assignment comes
+      // from the same /api/session the boot check uses, so there's one
+      // source of truth for "what can this account see" rather than two
+      // endpoints that could drift.
+      const session = await api.fetchSession()
+      set({ status: 'authenticated', role, username: session.username ?? username, teamIds: session.teamIds ?? [] })
       return true
     } catch (err) {
       set({ error: err instanceof Error ? err.message : 'Login failed' })
@@ -62,6 +74,6 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   logout: async () => {
     await api.logout()
-    set({ status: 'anonymous', role: null })
+    set({ status: 'anonymous', role: null, username: null, teamIds: [] })
   },
 }))

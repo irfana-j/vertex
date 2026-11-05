@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useStore } from '../store/useStore'
 import { useAuthStore } from '../store/useAuthStore'
+import { hasAnyWriteAccess, isGlobalAdmin } from '../lib/permissions'
 import { formatDateTime } from '../lib/format'
 import { getGroupColor } from '../data/constants'
 import { listSymphonyTemplates, getSymphonyTemplate } from '../lib/symphonyConnector'
@@ -251,13 +252,13 @@ function TrackTemplatePicker({ trackedSymphonyIds, onCancel, onTracked }: TrackT
 interface TemplateCardProps {
   template: Template
   groupNames: string[]
-  isAdmin: boolean
+  canSync: boolean
   activeCycleId: string | null
   syncingId: string | null
   onSync: (id: string) => void
 }
 
-function TemplateCard({ template: t, groupNames, isAdmin, activeCycleId, syncingId, onSync }: TemplateCardProps) {
+function TemplateCard({ template: t, groupNames, canSync, activeCycleId, syncingId, onSync }: TemplateCardProps) {
   const meta = getTemplateMeta(t)
   const status = getStatus(t, activeCycleId || '')
   const flaky = isFlaky(t)
@@ -316,7 +317,7 @@ function TemplateCard({ template: t, groupNames, isAdmin, activeCycleId, syncing
         </div>
       )}
 
-      {isAdmin && (
+      {canSync && (
         <div className="tpl-card-foot">
           <button className="btn small primary" disabled={syncingId === t.id} onClick={() => onSync(t.id)}>
             {syncingId === t.id ? 'Syncing…' : '⟳ Sync'}
@@ -335,7 +336,11 @@ export default function TemplatesListPage() {
   const activeCycleId = useStore((s) => s.activeCycleId)
   const syncJobResults = useStore((s) => s.syncJobResults)
   const syncAllTemplates = useStore((s) => s.syncAllTemplates)
-  const isAdmin = useAuthStore((s) => s.role === 'admin')
+  const role = useAuthStore((s) => s.role)
+  const teamIds = useAuthStore((s) => s.teamIds)
+  const auth = { role, teamIds }
+  const isAdmin = isGlobalAdmin(auth)
+  const canWriteAny = hasAnyWriteAccess(auth)
   const navigate = useNavigate()
   const activeCycle = cycles.find((c) => c.id === activeCycleId)
 
@@ -452,7 +457,7 @@ export default function TemplatesListPage() {
         <div className="actions">
           {syncError && <span style={{ fontSize: 12, color: '#c0392b', fontWeight: 600 }}>Sync failed: {syncError}</span>}
           {syncAllFlash && <span style={{ fontSize: 12, color: 'var(--primary-dark)', fontWeight: 600 }}>{syncAllFlash}</span>}
-          {isAdmin && templates.length > 0 && (
+          {canWriteAny && templates.length > 0 && (
             <button className="btn small" onClick={handleSyncAll} disabled={syncingAll}>
               {syncingAll ? 'Syncing all…' : '⟳ Sync all'}
             </button>
@@ -502,7 +507,7 @@ export default function TemplatesListPage() {
                       key={t.id}
                       template={t}
                       groupNames={groups.filter((g) => g.templateIds.includes(t.id)).map((g) => g.name)}
-                      isAdmin={isAdmin}
+                      canSync={canWriteAny}
                       activeCycleId={activeCycleId}
                       syncingId={syncingId}
                       onSync={handleSync}

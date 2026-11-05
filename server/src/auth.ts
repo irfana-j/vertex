@@ -1,15 +1,37 @@
 import { randomBytes } from 'node:crypto'
+import bcrypt from 'bcryptjs'
 import { parse, serialize } from 'cookie'
 import type { NextFunction, Request, Response } from 'express'
 import * as db from './db.js'
 
-export type Role = 'admin' | 'user'
+// Two global roles (see everything), three team-scoped roles (see/act only
+// on the team(s) their account is assigned to). A team-scoped account with
+// no teamIds assigned yet effectively sees nothing — that's a deliberate
+// fail-closed default, not a bug, while an admin finishes setting them up.
+export type Role = 'admin' | 'reader' | 'team_admin' | 'team_editor' | 'team_reader'
+export const TEAM_SCOPED_ROLES: Role[] = ['team_admin', 'team_editor', 'team_reader']
+export function isTeamScopedRole(role: Role): boolean {
+  return TEAM_SCOPED_ROLES.includes(role)
+}
+// team_admin can manage its own team's membership/budget/delete; team_editor
+// can raise tickets/sync/edit budget but not manage membership; team_reader
+// is read-only. Both non-reader team roles can write within their team(s).
+export function canWriteInTeam(role: Role): boolean {
+  return role === 'team_admin' || role === 'team_editor'
+}
+
+export interface AuthedUser {
+  id: string
+  username: string
+  role: Role
+  teamIds: string[]
+}
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
-      role?: Role
+      user?: AuthedUser
     }
   }
 }
@@ -27,46 +49,19 @@ const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000
 // Sessions live in Postgres (see db.ts) rather than an in-memory Map — this
 // app runs behind an ALB, and an in-process Map is only visible to the one
 // instance that happens to handle a given request. Real credentials never
-// touch the DB; they're only ever compared against env vars set on the server.
-
-// ADMIN_PASSWORD / USER_PASSWORD are expected base64-encoded (e.g.
-// `echo -n 'the real password' | base64`) rather than plain text — this is
-// NOT encryption, just keeps the literal password from being readable at a
-// glance in a docker run command, a .env file, or `docker inspect`. Anyone
-// who can read the env var can decode it in one step.
-function decodeBase64(value: string): string {
-  try {
-    return Buffer.from(value, 'base64').toString('utf8')
-  } catch {
-    return value
-  }
-}
-
-function adminPassword() {
-  const raw = process.env.ADMIN_PASSWORD || ''
-  return raw ? decodeBase64(raw) : ''
-}
-function userPassword() {
-  const raw = process.env.USER_PASSWORD || ''
-  return raw ? decodeBase64(raw) : ''
-}
-// Usernames aren't secret, so these stay plain text — default to the role
-// name itself so existing deployments that haven't set these yet still work.
-function adminUsername() {
-  return process.env.ADMIN_USERNAME || 'admin'
-}
-function userUsername() {
-  return process.env.USER_USERNAME || 'user'
-}
+// touch the DB in plaintext — every password is bcrypt-hashed in app_users
+// (see db.ts's bootstrap seeding for the one exception: the legacy
+// ADMIN_PASSWORD/USER_PASSWORD env vars, base64-"obscured" only, get hashed
+// into app_users the first time this runs against an empty table).
 
 export async function login(username: string, password: string): Promise<{ token: string; role: Role } | null> {
-  let role: Role | null = null
-  if (adminPassword() && username === adminUsername() && password === adminPassword()) role = 'admin'
-  else if (userPassword() && username === userUsername() && password === userPassword()) role = 'user'
-  if (!role) return null
+  const user = await db.getUserByUsername(username)
+  if (!user) return null
+  const ok = await bcrypt.compare(password, user.passwordHash)
+  if (!ok) return null
   const token = randomBytes(24).toString('hex')
-  await db.createSession(token, role)
-  return { token, role }
+  await db.createSession(token, user.id)
+  return { token, role: user.role as Role }
 }
 
 export async function logout(token: string | undefined) {
@@ -77,7 +72,11 @@ export function getSessionToken(req: Request): string | undefined {
   return parse(req.headers.cookie || '')[SESSION_COOKIE]
 }
 
-async function getSession(req: Request): Promise<{ role: Role } | null> {
+// Role/team assignment is looked up fresh from app_users on every request
+// (not frozen into the session at login time) — an admin changing someone's
+// role or team takes effect on their very next request, and deleting a user
+// immediately invalidates every session they're in, not just future logins.
+async function getSession(req: Request): Promise<AuthedUser | null> {
   const token = getSessionToken(req)
   if (!token) return null
   const session = await db.getSession(token)
@@ -86,8 +85,13 @@ async function getSession(req: Request): Promise<{ role: Role } | null> {
     await db.deleteSession(token)
     return null
   }
+  const user = await db.getUserById(session.userId)
+  if (!user) {
+    await db.deleteSession(token)
+    return null
+  }
   await db.touchSession(token)
-  return { role: session.role as Role }
+  return { id: user.id, username: user.username, role: user.role as Role, teamIds: user.teamIds }
 }
 
 export function getSessionFromRequest(req: Request) {
@@ -116,9 +120,9 @@ export function clearSessionCookie(res: Response) {
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   try {
-    const session = await getSession(req)
-    if (!session) return res.status(401).json({ error: 'Not logged in' })
-    req.role = session.role
+    const user = await getSession(req)
+    if (!user) return res.status(401).json({ error: 'Not logged in' })
+    req.user = user
     next()
   } catch (err) {
     next(err)
@@ -127,10 +131,29 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
 export async function requireAdmin(req: Request, res: Response, next: NextFunction) {
   try {
-    const session = await getSession(req)
-    if (!session) return res.status(401).json({ error: 'Not logged in' })
-    if (session.role !== 'admin') return res.status(403).json({ error: 'Admin access required' })
-    req.role = session.role
+    const user = await getSession(req)
+    if (!user) return res.status(401).json({ error: 'Not logged in' })
+    if (user.role !== 'admin') return res.status(403).json({ error: 'Admin access required' })
+    req.user = user
+    next()
+  } catch (err) {
+    next(err)
+  }
+}
+
+// Gate for actions that mutate shared data but aren't admin-only — raising
+// a ticket, syncing a template, posting a follow-up comment. Readers and
+// team_reader are excluded; which specific templates/teams a team_admin or
+// team_editor can actually touch is enforced downstream, at the /api/state
+// merge (see rbac.ts) — this just keeps read-only accounts out entirely.
+export async function requireWriteAccess(req: Request, res: Response, next: NextFunction) {
+  try {
+    const user = await getSession(req)
+    if (!user) return res.status(401).json({ error: 'Not logged in' })
+    if (user.role !== 'admin' && !canWriteInTeam(user.role)) {
+      return res.status(403).json({ error: 'This account is read-only.' })
+    }
+    req.user = user
     next()
   } catch (err) {
     next(err)

@@ -1,19 +1,30 @@
 import { useState } from 'react'
 import { useStore } from '../store/useStore'
 import { useAuthStore } from '../store/useAuthStore'
+import { canManageTeam, isGlobalAdmin } from '../lib/permissions'
 
 // Which team owns this template — a separate, single-pick dimension from
 // Regression Groups (TemplateGroupPicker), which are ad hoc many-to-many
-// sets. A template belongs to at most one team. Purely organizational: a
-// filter, not an access boundary — every team's templates stay visible to
-// everyone with login access.
+// sets. A template belongs to at most one team. This IS an access boundary
+// now — a team_admin/team_editor/team_reader account only ever sees
+// templates already assigned to one of its own teams (enforced server-side,
+// see server/src/rbac.ts), so the team chips below only ever list teams
+// this account could plausibly be reassigning into.
 export default function TemplateTeamPicker({ templateId }: { templateId: string }) {
   const teams = useStore((s) => s.teams)
   const template = useStore((s) => s.templates.find((t) => t.id === templateId))
   const createTeam = useStore((s) => s.createTeam)
   const setTemplateTeam = useStore((s) => s.setTemplateTeam)
   const deleteTeam = useStore((s) => s.deleteTeam)
-  const isAdmin = useAuthStore((s) => s.role === 'admin')
+  const role = useAuthStore((s) => s.role)
+  const teamIds = useAuthStore((s) => s.teamIds)
+  const auth = { role, teamIds }
+  const isAdmin = isGlobalAdmin(auth)
+  // Whether this account can move THIS template in or out of a team at
+  // all — only global admin, or the team_admin who already owns whichever
+  // team this template currently sits in (or no team, for an admin-visible
+  // unassigned one — a team_admin never sees those to begin with).
+  const canManageThisTemplate = canManageTeam(auth, template?.teamId ?? null)
 
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
@@ -38,12 +49,12 @@ export default function TemplateTeamPicker({ templateId }: { templateId: string 
             <span key={tm.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
               <button
                 className={`uc-chip${on ? ' on' : ''}`}
-                disabled={!isAdmin}
+                disabled={!canManageThisTemplate}
                 onClick={() => setTemplateTeam(templateId, on ? null : tm.id)}
               >
                 {tm.name}
               </button>
-              {isAdmin && (
+              {canManageTeam(auth, tm.id) && (
                 <button
                   className="icon-btn"
                   style={{ width: 22, height: 22, fontSize: 11 }}

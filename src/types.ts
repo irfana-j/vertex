@@ -4,7 +4,11 @@
 // external response whose exact fields aren't all confirmed — see the
 // comments in symphonyConnector.ts for which ones are guesses.
 
-export type Role = 'admin' | 'user'
+// Two global roles (see/act on everything) and three team-scoped ones
+// (restricted to whichever team(s) the account is assigned — see
+// lib/permissions.ts for what each can actually do). 'user' from before
+// multi-account RBAC is now 'reader' — same meaning, global read-only.
+export type Role = 'admin' | 'reader' | 'team_admin' | 'team_editor' | 'team_reader'
 
 export interface NodeData {
   label: string
@@ -150,9 +154,26 @@ export interface Template {
   teamId: string | null
 }
 
+// A real named account — admin manages these in Settings. Password never
+// comes back from the server past creation/reset.
+export interface AppUser {
+  id: string
+  username: string
+  role: Role
+  teamIds: string[]
+  createdAt: number
+}
+
 export interface Team {
   id: string
   name: string
+  // How many days this team gets for a full regression pass before its
+  // tile flags "Overdue" — set per team (admin-only, from the team's own
+  // card on the dashboard) since different teams run on different
+  // schedules; there's no one shared window across the whole app anymore.
+  // null means no deadline is tracked for this team — its tile just shows
+  // progress, never overdue.
+  regressionBudgetDays: number | null
 }
 
 export interface Cycle {
@@ -327,9 +348,10 @@ export interface GroupDashboard {
   // job again doesn't change it. null while anything is still unrun (or
   // the group/team has no templates at all).
   finishedAt: number | null
-  // True once the cycle has run past the backend's fixed, never-displayed
-  // 2-week budget AND this group/team still hasn't finished — the
-  // "overdue" flag. Always false once finishedAt is set.
+  // True once the cycle has run past this team's own regression budget
+  // (Team.regressionBudgetDays — Regression Groups don't carry one, so
+  // theirs is always false) AND it still hasn't finished — the "overdue"
+  // flag. Always false once finishedAt is set, or when no budget is set.
   isOverdue: boolean
   templates: GroupDashboardTemplateRow[]
 }

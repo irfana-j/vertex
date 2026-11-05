@@ -20,6 +20,13 @@ interface RollupCardProps {
   onDelete?: () => void
   deleteNoun: string
   emptyTemplatesLabel: string
+  // Only Team cards carry a regression window — each team runs its own
+  // schedule, so this isn't one fixed app-wide value anymore (see
+  // Team.regressionBudgetDays). Leave both undefined for a Group card,
+  // which never tracks a deadline of its own. onChangeBudgetDays present
+  // (vs. absent) is what gates the editable control to admins.
+  budgetDays?: number | null
+  onChangeBudgetDays?: (days: number | null) => void
 }
 
 // Shared by the Group rollup and Team rollup sections — a card with TWO
@@ -38,6 +45,8 @@ export default function RollupCard({
   onDelete,
   deleteNoun,
   emptyTemplatesLabel,
+  budgetDays,
+  onChangeBudgetDays,
 }: RollupCardProps) {
   const color = getGroupColor(g.name)
   // Finished → frozen on the day it actually finished. Still going → the
@@ -72,6 +81,31 @@ export default function RollupCard({
           )}
         </span>
       </div>
+
+      {budgetDays !== undefined && (
+        <div className="cc-budget-row">
+          {onChangeBudgetDays ? (
+            <label>
+              Regression window:
+              <input
+                key={`${g.id}:${budgetDays ?? 'none'}`}
+                type="number"
+                min={1}
+                className="cc-budget-input"
+                placeholder="No deadline"
+                defaultValue={budgetDays ?? ''}
+                onBlur={(e) => {
+                  const raw = e.target.value.trim()
+                  onChangeBudgetDays(raw === '' ? null : Number(raw))
+                }}
+              />
+              day{budgetDays === 1 ? '' : 's'}
+            </label>
+          ) : (
+            <span>{budgetDays !== null ? `Regression window: ${budgetDays} day${budgetDays === 1 ? '' : 's'}` : 'No deadline set for this team'}</span>
+          )}
+        </div>
+      )}
 
       <div className="cc-progress-block">
         <div className="cc-subhead">Pass rate</div>

@@ -12,6 +12,7 @@ import IdleTimeoutWarning from './components/IdleTimeoutWarning'
 import SettingsPage from './pages/SettingsPage'
 import { useStore, onHydrationError } from './store/useStore'
 import { useAuthStore } from './store/useAuthStore'
+import { roleLabel } from './lib/permissions'
 
 const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000
 // Matches the 15-minute poll the reference Azure DevOps sync logic uses —
@@ -34,6 +35,7 @@ function FullScreenMessage({ text }: { text: string }) {
 export default function App() {
   const authStatus = useAuthStore((s) => s.status)
   const role = useAuthStore((s) => s.role)
+  const username = useAuthStore((s) => s.username)
   const checkSession = useAuthStore((s) => s.checkSession)
   const sessionCheckFailed = useAuthStore((s) => s.sessionCheckFailed)
   const logout = useAuthStore((s) => s.logout)
@@ -96,35 +98,46 @@ export default function App() {
     startNewCycle()
   }, [hydrated, role, cycleCount, startNewCycle])
 
+  // Any write-capable role: admin (everything) or team_admin/team_editor
+  // (their own team's templates only — syncAllTemplates() naturally only
+  // ever sees those, since a team-scoped account's store only ever holds
+  // its own team's slice to begin with, filtered server-side). A read-only
+  // role's sync would just get rejected trying to save back to the backend.
+  const canSync = role === 'admin' || role === 'team_admin' || role === 'team_editor'
+  // Pure read-only roles (reader / team_reader) have no sync of their own to
+  // drive fresh data in — this just re-pulls the shared state on a shorter
+  // interval instead, same reasoning the comment below always had.
+  const isReadOnly = role === 'reader' || role === 'team_reader'
+
   // Background auto-sync — every tracked template's job results refresh on
   // their own every 10 minutes, not just when someone happens to open that
-  // template's page and click Sync. Admin-only: a viewer's sync would just
-  // get rejected when it tried to save back to the backend.
+  // template's page and click Sync.
   useEffect(() => {
-    if (!hydrated || role !== 'admin') return
+    if (!hydrated || !canSync) return
     const id = setInterval(() => {
       syncAllTemplates()
     }, AUTO_SYNC_INTERVAL_MS)
     return () => clearInterval(id)
-  }, [hydrated, role, syncAllTemplates])
+  }, [hydrated, canSync, syncAllTemplates])
 
-  // Same admin-only reasoning as the template auto-sync above — a viewer
-  // can't write the result back anyway, and it'd just get a 403.
   useEffect(() => {
-    if (!hydrated || role !== 'admin') return
+    if (!hydrated || !canSync) return
     const id = setInterval(() => {
       syncAllTicketsFromBoard()
     }, TICKET_SYNC_INTERVAL_MS)
     return () => clearInterval(id)
-  }, [hydrated, role, syncAllTicketsFromBoard])
+  }, [hydrated, canSync, syncAllTicketsFromBoard])
 
+  // A read-only viewer never writes back to the backend, so it has no other
+  // way to see what an admin's (or a team editor's) browser just synced —
+  // this just re-pulls the shared state on a shorter interval instead.
   useEffect(() => {
-    if (!hydrated || role !== 'user') return
+    if (!hydrated || !isReadOnly) return
     const id = setInterval(() => {
       useStore.persist.rehydrate()
     }, VIEWER_REFRESH_INTERVAL_MS)
     return () => clearInterval(id)
-  }, [hydrated, role])
+  }, [hydrated, isReadOnly])
 
   if (authStatus === 'checking' && sessionCheckFailed) {
     return (
@@ -182,14 +195,16 @@ export default function App() {
         <div className="sidebar-foot">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
             <span>
-              Signed in as <b>{role === 'admin' ? 'Admin' : 'Viewer'}</b>
+              Signed in as <b>{username}</b> ({roleLabel(role)})
             </span>
             <button className="btn small" onClick={() => logout()}>
               Log out
             </button>
           </div>
           Tracks Symphony templates for regression. Data is shared across everyone signed in to this app.
-          {role === 'user' && ' You have read-only access.'}
+          {role === 'reader' && ' You have read-only access.'}
+          {role === 'team_reader' && ' You have read-only access to your team.'}
+          {(role === 'team_admin' || role === 'team_editor') && " You can only see and act on your own team's templates."}
         </div>
       </aside>
 

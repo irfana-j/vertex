@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore } from '../store/useStore'
 import { useAuthStore } from '../store/useAuthStore'
+import { hasAnyWriteAccess } from '../lib/permissions'
 import { listAzureDevOpsIntegrations } from '../lib/devopsConnector'
 import type { AzureDevOpsIntegrationEntry, Ticket } from '../types'
 
@@ -28,7 +29,9 @@ interface RaiseTicketButtonProps {
 // already connected, using the node's own log as the description, rather
 // than asking for a ticket id that doesn't exist yet.
 export default function RaiseTicketButton({ templateId, templateName, runId, nodeId, scenario, reason, log, existingTicket }: RaiseTicketButtonProps) {
-  const isAdmin = useAuthStore((s) => s.role === 'admin')
+  const role = useAuthStore((s) => s.role)
+  const teamIds = useAuthStore((s) => s.teamIds)
+  const canWrite = hasAnyWriteAccess({ role, teamIds })
   const raiseTicketForNode = useStore((s) => s.raiseTicketForNode)
   const syncTicketFromBoard = useStore((s) => s.syncTicketFromBoard)
 
@@ -49,7 +52,7 @@ export default function RaiseTicketButton({ templateId, templateName, runId, nod
         >
           {existingTicket.boardState || existingTicket.status}
         </span>
-        {isAdmin && (
+        {canWrite && (
           <button
             className="icon-btn"
             title="Sync status from board"
@@ -74,7 +77,7 @@ export default function RaiseTicketButton({ templateId, templateName, runId, nod
     )
   }
 
-  if (!isAdmin) return null
+  if (!canWrite) return null
 
   const raiseAgainst = async (organization: string) => {
     setPhase('raising')

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate, useParams, Link } from 'react-router-dom'
 import { useStore } from '../store/useStore'
 import { useAuthStore } from '../store/useAuthStore'
+import { hasAnyWriteAccess, isGlobalAdmin } from '../lib/permissions'
 import TemplateGroupPicker from '../components/TemplateGroupPicker'
 import TemplateTeamPicker from '../components/TemplateTeamPicker'
 import NodeList from '../components/NodeList'
@@ -30,7 +31,16 @@ export default function TemplateBuilderPage() {
   const refreshTemplateStructure = useStore((s) => s.refreshTemplateStructure)
   const syncJobResults = useStore((s) => s.syncJobResults)
   const deleteTemplate = useStore((s) => s.deleteTemplate)
-  const isAdmin = useAuthStore((s) => s.role === 'admin')
+  const role = useAuthStore((s) => s.role)
+  const teamIds = useAuthStore((s) => s.teamIds)
+  const auth = { role, teamIds }
+  // Tracking/untracking a template stays global-admin-only; everything else
+  // here (sync, refresh structure, toggle tracked-for-regression) is open to
+  // any write-capable role for a template they can see at all — a template
+  // a team_admin/team_editor can even open is, by construction, already
+  // theirs (see server/src/rbac.ts's scopeStateForUser).
+  const isAdmin = isGlobalAdmin(auth)
+  const canWrite = hasAnyWriteAccess(auth)
 
   const [syncing, setSyncing] = useState(false)
   const [syncFlash, setSyncFlash] = useState<string | null>(null)
@@ -115,8 +125,8 @@ export default function TemplateBuilderPage() {
             <>
               <button
                 className={`symphony-badge toggle-badge${infoData.enabled ? ' on' : ''}`}
-                onClick={() => isAdmin && updateInfo({ enabled: !infoData.enabled })}
-                disabled={!isAdmin}
+                onClick={() => canWrite && updateInfo({ enabled: !infoData.enabled })}
+                disabled={!canWrite}
                 title="Required (with the Regression label) for this template to count on the dashboard"
               >
                 {infoData.enabled ? '✓ Tracked for regression' : 'Not tracked'}
@@ -124,12 +134,14 @@ export default function TemplateBuilderPage() {
             </>
           )}
         </div>
-        {isAdmin && (
+        {canWrite && (
           <div className="page-head actions" style={{ marginBottom: 0 }}>
             {syncFlash && <span style={{ fontSize: 12, color: 'var(--primary-dark)', fontWeight: 600 }}>{syncFlash}</span>}
-            <button className="btn danger" onClick={handleDelete}>
-              Stop tracking
-            </button>
+            {isAdmin && (
+              <button className="btn danger" onClick={handleDelete}>
+                Stop tracking
+              </button>
+            )}
             <button className="btn primary" onClick={handleSync} disabled={syncing}>
               {syncing ? 'Syncing…' : '⟳ Sync job results'}
             </button>
@@ -148,7 +160,7 @@ export default function TemplateBuilderPage() {
             </>
           )}
         </span>
-        {isAdmin && (
+        {canWrite && (
           <button className="btn small" onClick={handleRefreshStructure} disabled={refreshing}>
             {refreshing ? 'Refreshing…' : 'Refresh structure'}
           </button>

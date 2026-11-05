@@ -13,6 +13,7 @@ import {
 } from '../lib/selectors'
 import { getGroupColor, TICKET_STATUSES } from '../data/constants'
 import { canSyncFromBoard } from '../lib/devopsConnector'
+import { canManageTeam, canWriteTeam, hasAnyWriteAccess, isGlobalAdmin } from '../lib/permissions'
 import Donut from '../components/dashboard/Donut'
 import RollupCard from '../components/dashboard/RollupCard'
 import type { CycleTrendPoint, TicketStatus } from '../types'
@@ -126,13 +127,23 @@ export default function DashboardPage() {
   const teams = useStore((s) => s.teams)
   const deleteGroup = useStore((s) => s.deleteGroup)
   const deleteTeam = useStore((s) => s.deleteTeam)
+  const setTeamRegressionBudget = useStore((s) => s.setTeamRegressionBudget)
   const exportState = useStore((s) => s.exportState)
   const importState = useStore((s) => s.importState)
   const updateTicket = useStore((s) => s.updateTicket)
   const syncTicketFromBoard = useStore((s) => s.syncTicketFromBoard)
   const syncAllTicketsFromBoard = useStore((s) => s.syncAllTicketsFromBoard)
   const followUpOnTicket = useStore((s) => s.followUpOnTicket)
-  const isAdmin = useAuthStore((s) => s.role === 'admin')
+  const role = useAuthStore((s) => s.role)
+  const teamIds = useAuthStore((s) => s.teamIds)
+  const auth = { role, teamIds }
+  // "isAdmin" below means global admin specifically — import/export-replace,
+  // deleting a Regression Group, starting/closing cycles. Team/ticket
+  // actions use the more specific canWriteTeam/canManageTeam/hasAnyWriteAccess
+  // checks instead, since a team_admin or team_editor should get those
+  // without being a global admin.
+  const isAdmin = isGlobalAdmin(auth)
+  const canWriteAny = hasAnyWriteAccess(auth)
 
   const [selectedCycleId, setSelectedCycleId] = useState(activeCycleId)
   // If a new cycle starts elsewhere (sidebar), follow it back to "current"
@@ -218,10 +229,6 @@ export default function DashboardPage() {
     }
   }
 
-  const pullAllRunsIntoActiveCycle = useStore((s) => s.pullAllRunsIntoActiveCycle)
-  const [pulling, setPulling] = useState(false)
-  const [pullMsg, setPullMsg] = useState<string | null>(null)
-
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [importMsg, setImportMsg] = useState<string | null>(null)
 
@@ -259,31 +266,6 @@ export default function DashboardPage() {
       setImportMsg(`Import failed: ${err instanceof Error ? err.message : String(err)}`)
     }
     setTimeout(() => setImportMsg(null), 6000)
-  }
-
-  const handlePullAllIntoCycle = async () => {
-    if (
-      !confirm(
-        `This re-syncs every tracked template from Symphony and stamps ALL of their job history onto the "${selectedCycle?.label}" cycle, regardless of when each job actually ran. Meant for a one-time pull right after starting a fresh cycle — running it again later will do the same thing again. Continue?`
-      )
-    ) {
-      return
-    }
-    setPulling(true)
-    setPullMsg(null)
-    try {
-      const { templatesTouched, runsReassigned } = await pullAllRunsIntoActiveCycle()
-      setPullMsg(
-        runsReassigned > 0
-          ? `Pulled ${runsReassigned} job(s) across ${templatesTouched} template(s) into "${selectedCycle?.label}".`
-          : 'Nothing to pull in — every run is already in this cycle.'
-      )
-    } catch (err) {
-      setPullMsg(`Failed: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setPulling(false)
-      setTimeout(() => setPullMsg(null), 8000)
-    }
   }
 
   return (
@@ -337,23 +319,10 @@ export default function DashboardPage() {
               <input ref={fileInputRef} type="file" accept="application/json" style={{ display: 'none' }} onChange={handleImportFile} />
             </>
           )}
-          {isAdmin && !isViewingHistory && (
-            <button
-              className="btn small"
-              title="One-time: pull every synced job into this cycle regardless of when it actually ran"
-              disabled={pulling}
-              onClick={handlePullAllIntoCycle}
-            >
-              {pulling ? 'Pulling…' : '⟳ Pull all jobs into this cycle'}
-            </button>
-          )}
         </div>
       </div>
       {importMsg && (
         <p style={{ marginTop: -6, marginBottom: 12, fontSize: 12.5, color: 'var(--primary-dark)', fontWeight: 600 }}>{importMsg}</p>
-      )}
-      {pullMsg && (
-        <p style={{ marginTop: -6, marginBottom: 12, fontSize: 12.5, color: 'var(--primary-dark)', fontWeight: 600 }}>{pullMsg}</p>
       )}
 
       {isViewingHistory && (
@@ -410,7 +379,8 @@ export default function DashboardPage() {
             <p>
               Each team's combined progress across every template assigned to it — e.g. a "Cloud" team spanning its
               AWS, Azure and GCP groups gets one progress bar here; a "Dev" team with its own templates gets its own.
-              Assign a template's team from its own page.
+              Assign a template's team from its own page. Set each team's own regression window right on its card below
+              — teams don't all have to run on the same schedule.
             </p>
           </div>
         </div>
@@ -427,7 +397,7 @@ export default function DashboardPage() {
                 expanded={expandedTeamId === tm.id}
                 onToggleExpand={() => setExpandedTeamId(expandedTeamId === tm.id ? null : tm.id)}
                 onDelete={
-                  isAdmin
+                  canManageTeam(auth, tm.id)
                     ? () => {
                         if (confirm(`Delete team "${tm.name}"? Templates stay tracked — this only clears their team.`)) deleteTeam(tm.id)
                       }
@@ -435,6 +405,8 @@ export default function DashboardPage() {
                 }
                 deleteNoun="team"
                 emptyTemplatesLabel="No templates assigned to this team yet."
+                budgetDays={teams.find((t) => t.id === tm.id)?.regressionBudgetDays ?? null}
+                onChangeBudgetDays={canWriteTeam(auth, tm.id) ? (days) => setTeamRegressionBudget(tm.id, days) : undefined}
               />
             ))}
           </div>
@@ -707,7 +679,7 @@ export default function DashboardPage() {
               status syncs live from the board; closed tickets stay listed here instead of disappearing.
             </p>
           </div>
-          {isAdmin && (
+          {canWriteAny && (
             <button className="btn small" onClick={handleSyncAllTickets} disabled={syncingAllTickets}>
               {syncingAllTickets ? 'Syncing…' : '⟳ Sync all from board'}
             </button>
@@ -757,7 +729,7 @@ export default function DashboardPage() {
                       <select
                         className={`tstatus-select ${ticketStatusClass(t.status)}`}
                         value={t.status}
-                        disabled={!isAdmin}
+                        disabled={!canWriteAny}
                         title="No linked board for this ticket — set its status by hand"
                         onChange={(e) => updateTicket(t.templateId, t.id, { status: e.target.value as TicketStatus })}
                       >
@@ -766,7 +738,7 @@ export default function DashboardPage() {
                         ))}
                       </select>
                     )}
-                    {isAdmin && canSyncFromBoard(t) && (
+                    {canWriteAny && canSyncFromBoard(t) && (
                       <div style={{ display: 'flex', gap: 6 }}>
                         <button className="icon-btn" title="Sync status from board" disabled={busy} onClick={() => handleSyncTicket(t.templateId, t.id)}>
                           ⟳

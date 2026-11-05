@@ -2,10 +2,26 @@ import express from 'express'
 import type { NextFunction, Request, Response } from 'express'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getState, setState, type AppState } from './db.js'
-import { clearSessionCookie, getSessionFromRequest, getSessionToken, login, logout, requireAdmin, requireAuth, setSessionCookie } from './auth.js'
+import bcrypt from 'bcryptjs'
+import { getState, setState, listUsers, createUser, updateUser, deleteUser, type AppState } from './db.js'
+import {
+  clearSessionCookie,
+  getSessionFromRequest,
+  getSessionToken,
+  isTeamScopedRole,
+  login,
+  logout,
+  requireAdmin,
+  requireAuth,
+  requireWriteAccess,
+  setSessionCookie,
+  type Role,
+} from './auth.js'
+import { scopeStateForUser, mergeAuthorizedWrite } from './rbac.js'
 import { proxySymphonyAuth, proxySymphonyDnd } from './symphonyProxy.js'
 import { deleteIntegration, forwardCreateWorkItem, forwardGetWorkItem, forwardPostComment, forwardUploadAttachment, listIntegrations, upsertIntegration, testConnection } from './azureDevOps.js'
+
+const VALID_ROLES: Role[] = ['admin', 'reader', 'team_admin', 'team_editor', 'team_reader']
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -30,6 +46,7 @@ app.post('/api/login', async (req, res, next) => {
   }
 })
 
+
 app.post('/api/logout', async (req, res, next) => {
   try {
     await logout(getSessionToken(req))
@@ -42,21 +59,35 @@ app.post('/api/logout', async (req, res, next) => {
 
 app.get('/api/session', async (req, res, next) => {
   try {
-    const session = await getSessionFromRequest(req)
-    res.json({ role: session?.role ?? null })
+    const user = await getSessionFromRequest(req)
+    res.json(user ? { role: user.role, username: user.username, teamIds: user.teamIds } : { role: null })
   } catch (err) {
     next(err)
   }
 })
 
-// GET is readable by either role; PUT (replacing the whole saved state) is
-// admin-only — enforced here, not just by hiding buttons in the UI.
-app.get('/api/state', requireAuth, async (_req, res) => {
-  res.json(await getState())
+// GET is readable by any logged-in account, but a team-scoped one (team_admin
+// / team_editor / team_reader) only gets its own team's slice back — see
+// scopeStateForUser. PUT (saving state) is open to any non-read-only role,
+// but what actually lands depends on who's asking: admin's write replaces
+// the whole thing (unchanged); a team-scoped writer's gets merged into the
+// real full state instead of trusted as a wholesale replacement — see
+// mergeAuthorizedWrite. reader and team_reader can't PUT at all.
+app.get('/api/state', requireAuth, async (req, res) => {
+  const full = await getState()
+  res.json(scopeStateForUser(full, req.user!))
 })
 
-app.put('/api/state', requireAdmin, async (req, res) => {
-  await setState(req.body as AppState)
+app.put('/api/state', requireWriteAccess, async (req, res) => {
+  const user = req.user!
+  if (user.role === 'admin') {
+    await setState(req.body as AppState)
+    return res.json({ ok: true })
+  }
+  // team_admin / team_editor only, by construction of requireWriteAccess
+  // (readers never pass it) — merge their write into the real full state.
+  const current = await getState()
+  await setState(mergeAuthorizedWrite(current, req.body as AppState, user))
   res.json({ ok: true })
 })
 
@@ -91,25 +122,79 @@ app.post('/api/integrations/azuredevops/test', requireAdmin, async (req, res) =>
   res.json(result)
 })
 
-// Per-ticket proxy, scoped by organization — both roles can pull a work
-// item's live status (same as the read-only Symphony proxies above);
-// posting a follow-up comment is a write action, gated the same way the
-// UI already gates that button.
+// Per-ticket proxy, scoped by organization — anyone logged in can pull a
+// work item's live status (same as the read-only Symphony proxies above);
+// raising a ticket, posting a follow-up, and uploading its report are write
+// actions, open to admin and both team-write roles (team_admin, team_editor)
+// but not a reader or team_reader. Which specific template a ticket ends up
+// against is enforced where it actually matters — the /api/state merge a
+// team-scoped account's local change then goes through — not here, since
+// these calls don't carry a templateId at all.
 app.get('/api/azuredevops/:organization/workitems/:id', requireAuth, forwardGetWorkItem)
-app.post('/api/azuredevops/:organization/workitems/:id/comment', requireAdmin, forwardPostComment)
-// Raises a brand-new work item on the board — the "Raise ticket" button
-// next to a failed node's log. Write action, so admin-only like the rest.
-app.post('/api/azuredevops/:organization/workitems', requireAdmin, forwardCreateWorkItem)
+app.post('/api/azuredevops/:organization/workitems/:id/comment', requireWriteAccess, forwardPostComment)
+app.post('/api/azuredevops/:organization/workitems', requireWriteAccess, forwardCreateWorkItem)
 // Uploads the generated failure-report PDF before the work item exists —
 // raw binary body, not JSON, so this route gets its own body parser instead
 // of the app-wide express.json() above (which skips non-JSON content types
 // and leaves the stream untouched for this to read).
 app.post(
   '/api/azuredevops/:organization/attachments',
-  requireAdmin,
+  requireWriteAccess,
   express.raw({ type: '*/*', limit: '15mb' }),
   forwardUploadAttachment
 )
+
+// User management — admin-only, for assigning the RBAC roles above to real
+// accounts. Password hashes never leave db.ts's row shape; listUsers()
+// already strips them before this ever sees a row.
+app.get('/api/users', requireAdmin, async (_req, res) => {
+  res.json({ users: await listUsers() })
+})
+app.post('/api/users', requireAdmin, async (req, res) => {
+  const username = String(req.body?.username ?? '').trim()
+  const password = String(req.body?.password ?? '')
+  const role = String(req.body?.role ?? '') as Role
+  const teamIds = Array.isArray(req.body?.teamIds) ? req.body.teamIds.filter((id: unknown) => typeof id === 'string') : []
+  if (!username || !password) return res.status(400).json({ error: 'A username and password are required.' })
+  if (!VALID_ROLES.includes(role)) return res.status(400).json({ error: `Role must be one of: ${VALID_ROLES.join(', ')}` })
+  try {
+    const passwordHash = await bcrypt.hash(password, 10)
+    const user = await createUser({ username, passwordHash, role, teamIds: isTeamScopedRole(role) ? teamIds : [] })
+    res.json({ user })
+  } catch (err) {
+    const message = String(err)
+    if (/duplicate key|unique/i.test(message)) return res.status(409).json({ error: `Username "${username}" is already taken.` })
+    res.status(500).json({ error: message })
+  }
+})
+// Role/teamIds/password are each optional on an edit — only the fields
+// actually sent get changed, so e.g. reassigning someone's team doesn't
+// force resetting their password in the same call.
+app.put('/api/users/:id', requireAdmin, async (req, res) => {
+  const patch: { role?: Role; teamIds?: string[]; passwordHash?: string } = {}
+  if (req.body?.role !== undefined) {
+    const role = String(req.body.role) as Role
+    if (!VALID_ROLES.includes(role)) return res.status(400).json({ error: `Role must be one of: ${VALID_ROLES.join(', ')}` })
+    patch.role = role
+    // Switching a team-scoped account to a global role (or vice versa)
+    // without an explicit teamIds in the same call shouldn't leave stale
+    // team assignments hanging off a now-global account.
+    if (!isTeamScopedRole(role) && req.body?.teamIds === undefined) patch.teamIds = []
+  }
+  if (req.body?.teamIds !== undefined) {
+    patch.teamIds = Array.isArray(req.body.teamIds) ? req.body.teamIds.filter((id: unknown) => typeof id === 'string') : []
+  }
+  if (typeof req.body?.password === 'string' && req.body.password.length > 0) {
+    patch.passwordHash = await bcrypt.hash(req.body.password, 10)
+  }
+  await updateUser(req.params.id, patch)
+  res.json({ ok: true })
+})
+app.delete('/api/users/:id', requireAdmin, async (req, res) => {
+  if (req.user!.id === req.params.id) return res.status(400).json({ error: "You can't delete your own account." })
+  await deleteUser(req.params.id)
+  res.json({ ok: true })
+})
 
 app.use(express.static(CLIENT_DIST))
 app.get('*', (_req, res) => {
