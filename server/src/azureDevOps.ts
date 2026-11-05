@@ -169,7 +169,7 @@ export async function forwardCreateWorkItem(req: Request, res: Response): Promis
   const description = String(req.body?.description ?? '')
   // Set when the client already uploaded a failure-report document (see
   // forwardUploadAttachment below) — linked onto the work item at creation
-  // time via an AttachmentLink relation, so the ticket shows up with its
+  // time via an AttachedFile relation, so the ticket shows up with its
   // report attached from the moment it's opened rather than needing a
   // second edit.
   const attachmentUrl = typeof req.body?.attachmentUrl === 'string' ? req.body.attachmentUrl : null
@@ -200,7 +200,7 @@ export async function forwardCreateWorkItem(req: Request, res: Response): Promis
             { op: 'add', path: '/fields/System.Title', value: title },
             { op: 'add', path: '/fields/System.Description', value: logToHtml(description) },
             ...(attachmentUrl
-              ? [{ op: 'add', path: '/relations/-', value: { rel: 'AttachmentLink', url: attachmentUrl, attributes: { comment: attachmentName } } }]
+              ? [{ op: 'add', path: '/relations/-', value: { rel: 'AttachedFile', url: attachmentUrl, attributes: { comment: attachmentName } } }]
               : []),
           ]),
         }
