@@ -162,6 +162,10 @@ export interface AppUser {
   role: Role
   teamIds: string[]
   createdAt: number
+  // 'local' (username/password) or 'azure_ad' (provisioned on first SSO
+  // sign-in — see server/src/db.ts's upsertSsoUser). An azure_ad account
+  // has no usable password; Settings hides "Reset password" for it.
+  authProvider: 'local' | 'azure_ad'
 }
 
 export interface Team {

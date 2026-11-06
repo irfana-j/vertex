@@ -343,6 +343,38 @@
   opacity: 0.5;
 }
 
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0;
+  color: #9b95c2;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.login-divider::before,
+.login-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.login-page .login-card .login-sso-btn {
+  width: 100%;
+  justify-content: center;
+  gap: 10px;
+  padding: 12px 14px;
+  font-size: 14px;
+  font-weight: 700;
+  background: #fff;
+  color: #1b1b1f;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+.login-page .login-card .login-sso-btn:hover {
+  background: #f1f1f1;
+}
+
 @media (max-width: 860px) {
   .login-content { flex-direction: column; padding: 32px 20px; gap: 36px; justify-content: center; }
   .login-headline { font-size: 34px; }
@@ -899,17 +931,45 @@ textarea.ctrl { resize: vertical; min-height: 56px; }
 }
 .cc-progress-block + .cc-progress-block { border-top: 1px solid var(--border); padding-top: 12px; }
 
-.cc-budget-row { font-size: 11.5px; color: var(--text-muted); margin-bottom: 10px; }
-.cc-budget-row label { display: flex; align-items: center; gap: 6px; }
-.cc-budget-input {
-  width: 52px;
-  font-size: 11.5px;
-  padding: 2px 6px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
+.cc-window-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.cc-window-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 11px;
+  border-radius: 999px;
   background: var(--surface-2);
+  border: 1px solid var(--border);
+  font: 800 12.5px 'Manrope', sans-serif;
   color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
+.cc-window-pill.editable {
+  background: var(--primary-soft);
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+  transition: border-color 0.15s ease;
+}
+.cc-window-pill.editable:focus-within {
+  border-color: var(--primary);
+}
+.cc-window-input {
+  width: 22px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: right;
+  -moz-appearance: textfield;
+}
+.cc-window-input:focus { outline: none; }
+.cc-window-input::-webkit-outer-spin-button,
+.cc-window-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.cc-window-unit { color: var(--text-muted); font-weight: 700; }
+.cc-window-empty { color: var(--text-faint); font-weight: 700; }
 
 .rollup-badge {
   font: 700 10.5px 'Manrope', sans-serif;
@@ -924,6 +984,28 @@ textarea.ctrl { resize: vertical; min-height: 56px; }
 @keyframes rollup-overdue-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
+}
+
+/* Whole-tile red callout once a team/group has blown past its regression
+   window and still hasn't finished — a quieter badge alone was easy to
+   miss, this is meant to be seen across the room. */
+.cloud-card.cc-overdue {
+  border-color: var(--critical);
+  background: color-mix(in srgb, var(--critical) 5%, var(--surface));
+  animation: cc-overdue-glow 2.4s ease-in-out infinite;
+}
+@keyframes cc-overdue-glow {
+  0%, 100% { box-shadow: 0 0 0 1px var(--critical-soft); }
+  50% { box-shadow: 0 0 0 1px var(--critical), 0 0 22px -4px var(--critical); }
+}
+.cc-overdue-banner {
+  font: 700 11.5px 'Manrope', sans-serif;
+  color: var(--critical);
+  background: var(--critical-soft);
+  border: 1px solid color-mix(in srgb, var(--critical) 35%, transparent);
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin-top: -2px;
 }
 
 .panel { padding: 18px 20px; }

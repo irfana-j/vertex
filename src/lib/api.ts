@@ -32,6 +32,14 @@ export async function logout(): Promise<void> {
   await fetch('/api/logout', { method: 'POST', credentials: 'include' })
 }
 
+// Whether this deployment has Microsoft Entra ID SSO configured — the login
+// screen only shows the "Sign in with Microsoft" button when this is true,
+// so an unconfigured deployment looks exactly like it did before SSO existed.
+export async function fetchSsoStatus(): Promise<{ enabled: boolean }> {
+  const res = await fetch('/api/auth/sso/status', { credentials: 'include' })
+  return (await asJson(res)) as { enabled: boolean }
+}
+
 // User management — admin-only (enforced server-side too). Used by
 // Settings' "Users" panel to assign the RBAC roles to real accounts.
 export async function listUsers(): Promise<AppUser[]> {

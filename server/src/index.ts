@@ -2,6 +2,7 @@ import express from 'express'
 import type { NextFunction, Request, Response } from 'express'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { serialize, parse } from 'cookie'
 import bcrypt from 'bcryptjs'
 import { getState, setState, listUsers, createUser, updateUser, deleteUser, type AppState } from './db.js'
 import {
@@ -10,6 +11,7 @@ import {
   getSessionToken,
   isTeamScopedRole,
   login,
+  loginViaSso,
   logout,
   requireAdmin,
   requireAuth,
@@ -18,6 +20,7 @@ import {
   type Role,
 } from './auth.js'
 import { scopeStateForUser, mergeAuthorizedWrite } from './rbac.js'
+import { isSsoConfigured, buildAuthorizationRedirect, buildCurrentUrl, completeLogin, type SsoFlowState } from './sso.js'
 import { proxySymphonyAuth, proxySymphonyDnd } from './symphonyProxy.js'
 import { deleteIntegration, forwardCreateWorkItem, forwardGetWorkItem, forwardPostComment, forwardUploadAttachment, listIntegrations, upsertIntegration, testConnection } from './azureDevOps.js'
 
@@ -61,6 +64,48 @@ app.get('/api/session', async (req, res, next) => {
   try {
     const user = await getSessionFromRequest(req)
     res.json(user ? { role: user.role, username: user.username, teamIds: user.teamIds } : { role: null })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Microsoft Entra ID (Azure AD) sign-in — only authenticates WHO someone is;
+// their RBAC role/team is still set by an admin afterward in Settings (a
+// brand new SSO account starts as team_reader with no team, i.e. no real
+// access — see db.ts's upsertSsoUser). No-ops with a 400 when unconfigured,
+// so this is harmless to leave registered even for a deployment not using it.
+const SSO_FLOW_COOKIE = 'vertex_sso_flow'
+
+app.get('/api/auth/sso/status', (_req, res) => {
+  res.json({ enabled: isSsoConfigured() })
+})
+
+app.get('/api/auth/sso/login', async (_req, res, next) => {
+  try {
+    if (!isSsoConfigured()) return res.status(400).json({ error: 'Single sign-on is not configured on this server.' })
+    const { url, flow } = await buildAuthorizationRedirect()
+    // Short-lived and single-purpose — only carries this one sign-in
+    // attempt's state/nonce/PKCE verifier between the redirect out and the
+    // callback; cleared the moment the callback reads it.
+    res.setHeader('Set-Cookie', serialize(SSO_FLOW_COOKIE, JSON.stringify(flow), { httpOnly: true, sameSite: 'lax', path: '/', maxAge: 600 }))
+    res.redirect(url)
+  } catch (err) {
+    next(err)
+  }
+})
+
+app.get('/api/auth/sso/callback', async (req, res, next) => {
+  try {
+    const raw = parse(req.headers.cookie || '')[SSO_FLOW_COOKIE]
+    res.setHeader('Set-Cookie', serialize(SSO_FLOW_COOKIE, '', { httpOnly: true, path: '/', maxAge: 0 }))
+    if (!raw) return res.status(400).send('Sign-in session expired or missing a required cookie — please try logging in again.')
+    const flow = JSON.parse(raw) as SsoFlowState
+    const currentUrl = buildCurrentUrl(req.originalUrl)
+    const identity = await completeLogin(currentUrl, flow)
+    const result = await loginViaSso(identity.email)
+    if (!result) return res.status(401).send('Sign-in failed.')
+    setSessionCookie(res, result.token)
+    res.redirect('/')
   } catch (err) {
     next(err)
   }

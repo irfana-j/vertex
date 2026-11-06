@@ -117,9 +117,14 @@ const ready = (async () => {
         password_hash TEXT NOT NULL,
         role TEXT NOT NULL,
         team_ids JSONB NOT NULL DEFAULT '[]',
-        created_at BIGINT NOT NULL
+        created_at BIGINT NOT NULL,
+        auth_provider TEXT NOT NULL DEFAULT 'local'
       )
     `)
+    // Added after app_users already shipped once — same ADD COLUMN IF NOT
+    // EXISTS pattern as sessions.user_id above, for anyone who already has
+    // the table from before SSO existed.
+    await client.query("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS auth_provider TEXT NOT NULL DEFAULT 'local'")
     // Bootstrap: the very first deploy of real user accounts has nobody in
     // app_users yet — seed it once from the existing ADMIN_USERNAME/
     // ADMIN_PASSWORD and USER_USERNAME/USER_PASSWORD env vars (the old
@@ -262,12 +267,28 @@ export interface AppUser {
   role: string
   teamIds: string[]
   createdAt: number
+  // 'local' (password login, this app's own account) or 'azure_ad' (signed
+  // in via SSO — see sso.ts). An azure_ad account's password_hash is a
+  // random, never-used value; login() in auth.ts refuses password auth for
+  // anything that isn't 'local'.
+  authProvider: string
 }
 export interface AppUserWithHash extends AppUser {
   passwordHash: string
 }
 
-function rowToUser(row: { id: string; username: string; role: string; team_ids: unknown; created_at: string; password_hash: string }): AppUserWithHash {
+type UserRow = {
+  id: string
+  username: string
+  role: string
+  team_ids: unknown
+  created_at: string
+  password_hash: string
+  auth_provider: string
+}
+const USER_COLUMNS = 'id, username, role, team_ids, created_at, password_hash, auth_provider'
+
+function rowToUser(row: UserRow): AppUserWithHash {
   return {
     id: row.id,
     username: row.username,
@@ -275,32 +296,25 @@ function rowToUser(row: { id: string; username: string; role: string; team_ids: 
     teamIds: Array.isArray(row.team_ids) ? (row.team_ids as string[]) : [],
     createdAt: Number(row.created_at),
     passwordHash: row.password_hash,
+    authProvider: row.auth_provider,
   }
 }
 
 export async function listUsers(): Promise<AppUser[]> {
   await ready
-  const { rows } = await query<{ id: string; username: string; role: string; team_ids: unknown; created_at: string; password_hash: string }>(
-    'SELECT id, username, role, team_ids, created_at, password_hash FROM app_users ORDER BY created_at ASC'
-  )
-  return rows.map(rowToUser).map((u) => ({ id: u.id, username: u.username, role: u.role, teamIds: u.teamIds, createdAt: u.createdAt }))
+  const { rows } = await query<UserRow>(`SELECT ${USER_COLUMNS} FROM app_users ORDER BY created_at ASC`)
+  return rows.map(rowToUser).map(({ passwordHash, ...rest }) => { void passwordHash; return rest })
 }
 
 export async function getUserByUsername(username: string): Promise<AppUserWithHash | null> {
   await ready
-  const { rows } = await query<{ id: string; username: string; role: string; team_ids: unknown; created_at: string; password_hash: string }>(
-    'SELECT id, username, role, team_ids, created_at, password_hash FROM app_users WHERE username = $1',
-    [username]
-  )
+  const { rows } = await query<UserRow>(`SELECT ${USER_COLUMNS} FROM app_users WHERE username = $1`, [username])
   return rows[0] ? rowToUser(rows[0]) : null
 }
 
 export async function getUserById(id: string): Promise<AppUserWithHash | null> {
   await ready
-  const { rows } = await query<{ id: string; username: string; role: string; team_ids: unknown; created_at: string; password_hash: string }>(
-    'SELECT id, username, role, team_ids, created_at, password_hash FROM app_users WHERE id = $1',
-    [id]
-  )
+  const { rows } = await query<UserRow>(`SELECT ${USER_COLUMNS} FROM app_users WHERE id = $1`, [id])
   return rows[0] ? rowToUser(rows[0]) : null
 }
 
@@ -312,7 +326,7 @@ export async function createUser(input: { username: string; passwordHash: string
     'INSERT INTO app_users (id, username, password_hash, role, team_ids, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
     [id, input.username, input.passwordHash, input.role, JSON.stringify(input.teamIds), createdAt]
   )
-  return { id, username: input.username, role: input.role, teamIds: input.teamIds, createdAt }
+  return { id, username: input.username, role: input.role, teamIds: input.teamIds, createdAt, authProvider: 'local' }
 }
 
 // `passwordHash` only present when the caller is actually resetting the
@@ -328,4 +342,24 @@ export async function updateUser(id: string, patch: { role?: string; teamIds?: s
 export async function deleteUser(id: string): Promise<void> {
   await ready
   await query('DELETE FROM app_users WHERE id = $1', [id])
+}
+
+// Called on every successful SSO callback (see sso.ts) — finds the existing
+// account for this identity, or provisions one on first sign-in. A brand
+// new SSO account starts as team_reader with no team assigned (sees
+// nothing) rather than any real access: the whole point is "they log in via
+// SSO, then an admin deliberately assigns their real role/team in Settings"
+// — never an automatic grant.
+export async function upsertSsoUser(username: string): Promise<AppUser> {
+  await ready
+  const existing = await getUserByUsername(username)
+  if (existing) return existing
+  const passwordHash = await bcrypt.hash(randomUUID(), 10)
+  const id = randomUUID()
+  const createdAt = Date.now()
+  await query(
+    'INSERT INTO app_users (id, username, password_hash, role, team_ids, created_at, auth_provider) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (username) DO NOTHING',
+    [id, username, passwordHash, 'team_reader', JSON.stringify([]), createdAt, 'azure_ad']
+  )
+  return (await getUserByUsername(username))!
 }

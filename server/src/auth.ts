@@ -57,8 +57,22 @@ const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000
 export async function login(username: string, password: string): Promise<{ token: string; role: Role } | null> {
   const user = await db.getUserByUsername(username)
   if (!user) return null
+  // An SSO-provisioned account's password_hash is a random, never-shared
+  // value (see db.ts's upsertSsoUser) — reject password auth for it
+  // outright rather than relying on that hash being merely unguessable.
+  if (user.authProvider !== 'local') return null
   const ok = await bcrypt.compare(password, user.passwordHash)
   if (!ok) return null
+  const token = randomBytes(24).toString('hex')
+  await db.createSession(token, user.id)
+  return { token, role: user.role as Role }
+}
+
+// Called once Azure AD has confirmed the user's identity (see sso.ts) —
+// finds or provisions their account and starts a normal session, same as a
+// password login from here on. No password is ever involved.
+export async function loginViaSso(email: string): Promise<{ token: string; role: Role } | null> {
+  const user = await db.upsertSsoUser(email)
   const token = randomBytes(24).toString('hex')
   await db.createSession(token, user.id)
   return { token, role: user.role as Role }

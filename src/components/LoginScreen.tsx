@@ -1,7 +1,19 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useAuthStore } from '../store/useAuthStore'
+import { fetchSsoStatus } from '../lib/api'
 import NetworkBackground from './NetworkBackground'
 import BrandMark from './BrandMark'
+
+function MicrosoftLogo() {
+  return (
+    <svg width={16} height={16} viewBox="0 0 21 21" aria-hidden="true">
+      <rect x="1" y="1" width="9" height="9" fill="#f25022" />
+      <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
+      <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
+      <rect x="11" y="11" width="9" height="9" fill="#ffb900" />
+    </svg>
+  )
+}
 
 function EyeIcon() {
   return (
@@ -27,6 +39,13 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [ssoEnabled, setSsoEnabled] = useState(false)
+
+  useEffect(() => {
+    fetchSsoStatus()
+      .then((s) => setSsoEnabled(s.enabled))
+      .catch(() => setSsoEnabled(false))
+  }, [])
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -83,6 +102,24 @@ export default function LoginScreen() {
               {submitting ? 'Signing in…' : 'Log in'}
             </button>
           </form>
+
+          {ssoEnabled && (
+            <>
+              <div className="login-divider">
+                <span>or</span>
+              </div>
+              <button
+                type="button"
+                className="btn login-sso-btn"
+                onClick={() => {
+                  window.location.href = '/api/auth/sso/login'
+                }}
+              >
+                <MicrosoftLogo />
+                Sign in with Microsoft
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

@@ -55,8 +55,12 @@ export default function RollupCard({
   const dayReferenceMs = g.finishedAt ?? cycleClosedAt ?? Date.now()
   const dayNumber = Math.floor((dayReferenceMs - cycleStartedAt) / DAY_MS) + 1
 
+  // How many templates still haven't run even once this cycle — the number
+  // the overdue banner below calls out by name, same as "Needs 8 done" would.
+  const notRunYet = g.templateCount - g.templatesRunCount
+
   return (
-    <div className="card cloud-card">
+    <div className={`card cloud-card${g.isOverdue ? ' cc-overdue' : ''}`}>
       <div className="cc-top" style={{ justifyContent: 'space-between' }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span className="cloud-dot" style={{ background: color, width: 10, height: 10 }} />
@@ -69,7 +73,7 @@ export default function RollupCard({
             </span>
           ) : g.isOverdue ? (
             <span className="rollup-badge overdue" title="Past the regression's time budget and still not fully run">
-              ⚠ Overdue
+              ⚠ Behind
             </span>
           ) : (
             g.templateCount > 0 && <span className="rollup-badge progress">Day {dayNumber}</span>
@@ -82,27 +86,43 @@ export default function RollupCard({
         </span>
       </div>
 
+      {g.isOverdue && (
+        <div className="cc-overdue-banner">
+          Regression window passed · needs {notRunYet} more template{notRunYet === 1 ? '' : 's'} run
+        </div>
+      )}
+
       {budgetDays !== undefined && (
-        <div className="cc-budget-row">
+        <div className="cc-window-row">
+          <span className="cc-subhead" style={{ marginBottom: 0 }}>
+            Regression window
+          </span>
           {onChangeBudgetDays ? (
-            <label>
-              Regression window:
+            <div className="cc-window-pill editable" title="Days this team gets for a full regression pass before it's flagged Overdue">
               <input
                 key={`${g.id}:${budgetDays ?? 'none'}`}
                 type="number"
                 min={1}
-                className="cc-budget-input"
-                placeholder="No deadline"
+                className="cc-window-input"
+                placeholder="—"
                 defaultValue={budgetDays ?? ''}
                 onBlur={(e) => {
                   const raw = e.target.value.trim()
                   onChangeBudgetDays(raw === '' ? null : Number(raw))
                 }}
               />
-              day{budgetDays === 1 ? '' : 's'}
-            </label>
+              <span className="cc-window-unit">{budgetDays === 1 ? 'day' : 'days'}</span>
+            </div>
           ) : (
-            <span>{budgetDays !== null ? `Regression window: ${budgetDays} day${budgetDays === 1 ? '' : 's'}` : 'No deadline set for this team'}</span>
+            <div className="cc-window-pill">
+              {budgetDays !== null ? (
+                <>
+                  {budgetDays} <span className="cc-window-unit">{budgetDays === 1 ? 'day' : 'days'}</span>
+                </>
+              ) : (
+                <span className="cc-window-empty">No deadline</span>
+              )}
+            </div>
           )}
         </div>
       )}

@@ -81,7 +81,9 @@ function UsersPanel() {
       <h3>Users</h3>
       <p className="p-sub">
         Real named accounts. Admin and Reader see everything; Team Admin/Editor/Reader only ever see the team(s) they're
-        assigned to below — enforced on the server, not just hidden in this UI.
+        assigned to below — enforced on the server, not just hidden in this UI. The form below creates a password
+        account; someone signing in with Microsoft shows up here automatically on their first sign-in, starting as Team
+        Reader with no team — assign their real role/team once they appear.
       </p>
 
       <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr', marginTop: 10, alignItems: 'end' }}>
@@ -137,6 +139,7 @@ function UsersPanel() {
             <thead>
               <tr>
                 <th>Username</th>
+                <th>Signs in via</th>
                 <th>Role</th>
                 <th>Team(s)</th>
                 <th></th>
@@ -146,6 +149,11 @@ function UsersPanel() {
               {users.map((u) => (
                 <tr key={u.id}>
                   <td style={{ fontWeight: 700 }}>{u.username}</td>
+                  <td>
+                    <span className="uc-tag" style={u.authProvider === 'azure_ad' ? { color: 'var(--primary-dark)', background: 'var(--primary-soft)', borderColor: 'transparent' } : undefined}>
+                      {u.authProvider === 'azure_ad' ? 'Microsoft SSO' : 'Password'}
+                    </span>
+                  </td>
                   <td>
                     <select className="ctrl" style={{ fontSize: 12.5 }} value={u.role} onChange={(e) => handleRoleChange(u, e.target.value as Role)}>
                       {ALL_ROLES.map((r) => (
@@ -201,9 +209,11 @@ function UsersPanel() {
                           </button>
                         </>
                       ) : (
-                        <button className="btn small" onClick={() => setResetId(u.id)}>
-                          Reset password
-                        </button>
+                        u.authProvider === 'local' && (
+                          <button className="btn small" onClick={() => setResetId(u.id)}>
+                            Reset password
+                          </button>
+                        )
                       )}
                       <button
                         className="icon-btn"
