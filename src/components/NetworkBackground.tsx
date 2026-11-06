@@ -3,9 +3,10 @@ import { useEffect, useRef } from 'react'
 // A small hand-rolled particle network (canvas, no library) — echoes the
 // app's own subject matter (nodes connected into a flow) rather than being
 // decoration for its own sake. Most of the time the particles just drift
-// and link to nearby neighbors; every so often they're a pun on the app's
-// name — "Vertex" — and actually converge into a recognizable polygon/star/
-// curve, hold there (slowly rotating), then burst back out to drifting.
+// and link to nearby neighbors; every so often they converge into either a
+// recognizable polygon/star/curve (slowly rotating while held) or one of a
+// few brand words traced in particles — a pun on the app's own name,
+// "Vertex" — then burst back out to drifting.
 
 interface Particle {
   x: number
@@ -19,7 +20,7 @@ interface Pt {
   y: number
 }
 
-const PARTICLE_COUNT = 70
+const PARTICLE_COUNT = 240
 const LINK_DISTANCE = 140
 const SPEED = 0.18
 
@@ -33,7 +34,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t
 const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2)
 const easeOutCubic = (t: number) => 1 - (1 - t) ** 3
 
-// ---- shape point generators, all in unit space (roughly radius 1 around the origin) ----
+// ---- polygon/curve point generators, all in unit space (roughly radius 1 around the origin) ----
 
 function regularPolygonCorners(sides: number, startAngle = -Math.PI / 2): Pt[] {
   return Array.from({ length: sides }, (_, i) => {
@@ -93,10 +94,9 @@ function infinityPoints(count: number): Pt[] {
   })
 }
 
-type ShapeName = 'hexagon' | 'star' | 'pentagon' | 'triangle' | 'circle' | 'infinity' | 'square' | 'hourglass'
-const SHAPES: ShapeName[] = ['hexagon', 'star', 'pentagon', 'triangle', 'circle', 'infinity', 'square', 'hourglass']
+type PolygonName = 'hexagon' | 'star' | 'pentagon' | 'triangle' | 'circle' | 'infinity' | 'square' | 'hourglass'
 
-function shapePoints(name: ShapeName, count: number): Pt[] {
+function polygonPoints(name: PolygonName, count: number): Pt[] {
   switch (name) {
     case 'hexagon':
       return perimeterPoints(regularPolygonCorners(6), count)
@@ -117,7 +117,95 @@ function shapePoints(name: ShapeName, count: number): Pt[] {
   }
 }
 
-// A few accent colors (as "r,g,b" strings) a formed shape can glow in —
+// Renders `text` to an offscreen canvas and samples its filled pixels down
+// to `count` points — a dot-matrix version of the word, not an outline, so
+// it still reads correctly instead of looking like a tangle of handwriting.
+// Points come back normalized the same way polygons are (roughly unit
+// scale), plus `aspect` — how many "radii" wide the word is relative to
+// tall — since a word is nowhere near circular.
+function textPoints(text: string, count: number): { points: Pt[]; aspect: number } {
+  const W = 700
+  const H = 220
+  const off = document.createElement('canvas')
+  off.width = W
+  off.height = H
+  const octx = off.getContext('2d')
+  if (!octx) return { points: [{ x: 0, y: 0 }], aspect: 1 }
+
+  octx.clearRect(0, 0, W, H)
+  octx.fillStyle = '#fff'
+  octx.textAlign = 'center'
+  octx.textBaseline = 'middle'
+  // A generic system font, not the app's own webfont — this only needs to
+  // produce a bold, legible silhouette to sample dots from, and sidesteps
+  // any race with the real font still loading when this first runs.
+  let fontSize = 160
+  const setFont = () => {
+    octx.font = `800 ${fontSize}px "Segoe UI", Arial, sans-serif`
+  }
+  setFont()
+  const maxW = W * 0.92
+  const measured = octx.measureText(text).width
+  if (measured > maxW) fontSize = Math.max(24, Math.floor(fontSize * (maxW / measured)))
+  setFont()
+  octx.fillText(text, W / 2, H / 2)
+
+  const { data } = octx.getImageData(0, 0, W, H)
+  const isOn = (x: number, y: number) => data[(y * W + x) * 4 + 3] > 120
+
+  let step = 4
+  let candidates: Pt[] = []
+  for (let attempt = 0; attempt < 5 && candidates.length < count; attempt++) {
+    candidates = []
+    for (let y = 0; y < H; y += step) {
+      for (let x = 0; x < W; x += step) {
+        if (isOn(x, y)) candidates.push({ x, y })
+      }
+    }
+    step = Math.max(1, step - 1)
+  }
+  if (candidates.length === 0) candidates = [{ x: W / 2, y: H / 2 }]
+
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[candidates[i], candidates[j]] = [candidates[j], candidates[i]]
+  }
+  const chosen = Array.from({ length: count }, (_, i) => candidates[i % candidates.length])
+
+  const xs = chosen.map((p) => p.x)
+  const ys = chosen.map((p) => p.y)
+  const minX = Math.min(...xs)
+  const maxX = Math.max(...xs)
+  const minY = Math.min(...ys)
+  const maxY = Math.max(...ys)
+  const cx = (minX + maxX) / 2
+  const cy = (minY + maxY) / 2
+  const halfH = Math.max(1, (maxY - minY) / 2)
+
+  const points = chosen.map((p) => ({ x: (p.x - cx) / halfH, y: (p.y - cy) / halfH }))
+  const aspect = Math.max(1, (maxX - minX) / 2 / halfH)
+  return { points, aspect }
+}
+
+// What the particles converge into — a polygon/curve (rotates while held)
+// or a word (stays upright and static so it's actually readable). Each
+// pick, a cycle through this list, not the same one twice in a row.
+type ShapeEntry = { kind: 'polygon'; name: PolygonName } | { kind: 'word'; text: string }
+const SHAPE_ENTRIES: ShapeEntry[] = [
+  { kind: 'polygon', name: 'hexagon' },
+  { kind: 'polygon', name: 'star' },
+  { kind: 'polygon', name: 'pentagon' },
+  { kind: 'word', text: 'Symphony' },
+  { kind: 'polygon', name: 'triangle' },
+  { kind: 'word', text: 'Regression' },
+  { kind: 'polygon', name: 'circle' },
+  { kind: 'polygon', name: 'infinity' },
+  { kind: 'word', text: 'Vertex' },
+  { kind: 'polygon', name: 'square' },
+  { kind: 'polygon', name: 'hourglass' },
+]
+
+// A few accent colors (as "r,g,b" strings) a formed shape/word can glow in —
 // cycled randomly so it's not the same look every time.
 const SHAPE_COLORS = ['157,148,255', '122,209,255', '255,143,216', '94,234,212', '255,196,125']
 
@@ -153,14 +241,18 @@ export default function NetworkBackground() {
     let holdDuration = 0
     let rotationSpeed = 0
 
-    let prevShape: ShapeName | null = null
+    let prevEntryIndex = -1
+    let isWord = false
+    let wordText = ''
+    let wordFontPx = 0
     let shapeCenter: Pt = { x: 0, y: 0 }
     let shapeRadius = 0
     let shapeRotationBase = 0
     let shapeColor = SHAPE_COLORS[0]
-    // baseLocal[particleIndex] = that particle's assigned unit-space shape
-    // point; perimeterOrder[k] = which particle owns perimeter point k, so
-    // the outline can be traced in the shape's actual edge order.
+    // baseLocal[particleIndex] = that particle's assigned unit-space target
+    // point; perimeterOrder[k] = which particle owns perimeter point k, so a
+    // polygon's outline can be traced in its actual edge order (unused for
+    // words, which are drawn as dots rather than a connected outline).
     let baseLocal: Pt[] = []
     let perimeterOrder: number[] = []
     let convergeFrom: Pt[] = []
@@ -184,20 +276,44 @@ export default function NetworkBackground() {
     }
 
     const startConverge = (now: number) => {
-      let next = SHAPES[Math.floor(Math.random() * SHAPES.length)]
-      if (next === prevShape) next = SHAPES[(SHAPES.indexOf(next) + 1) % SHAPES.length]
-      prevShape = next
-
-      shapeCenter = { x: width * randRange(0.32, 0.68), y: height * randRange(0.3, 0.7) }
-      shapeRadius = Math.min(width, height) * randRange(0.16, 0.26)
-      shapeRotationBase = randRange(0, Math.PI * 2)
+      let nextIndex = Math.floor(Math.random() * SHAPE_ENTRIES.length)
+      if (nextIndex === prevEntryIndex) nextIndex = (nextIndex + 1) % SHAPE_ENTRIES.length
+      prevEntryIndex = nextIndex
+      const entry = SHAPE_ENTRIES[nextIndex]
+      isWord = entry.kind === 'word'
       shapeColor = SHAPE_COLORS[Math.floor(Math.random() * SHAPE_COLORS.length)]
 
-      const basePts = shapePoints(next, PARTICLE_COUNT)
+      let basePts: Pt[]
+      if (entry.kind === 'polygon') {
+        basePts = polygonPoints(entry.name, PARTICLE_COUNT)
+        shapeRotationBase = randRange(0, Math.PI * 2)
+        shapeCenter = { x: width * randRange(0.32, 0.68), y: height * randRange(0.3, 0.7) }
+        shapeRadius = Math.min(width, height) * randRange(0.16, 0.26)
+      } else {
+        const { points, aspect } = textPoints(entry.text, PARTICLE_COUNT)
+        basePts = points
+        shapeRotationBase = 0
+        wordText = entry.text
+        let radius = Math.min(width, height) * 0.17
+        const maxHalfWidth = width * 0.34
+        if (radius * aspect > maxHalfWidth) radius = maxHalfWidth / aspect
+        shapeRadius = radius
+        // Calibrated against textPoints' own offscreen font size (160px
+        // mapped to a ~1-unit half-height) so the crisp label lines up with
+        // where the particles actually land.
+        wordFontPx = radius * 1.85
+        const halfW = radius * aspect
+        const halfH = radius
+        shapeCenter = {
+          x: Math.min(Math.max(width * randRange(0.42, 0.58), halfW + 24), width - halfW - 24),
+          y: Math.min(Math.max(height * randRange(0.32, 0.68), halfH + 24), height - halfH - 24),
+        }
+      }
+
       const initialTargets = basePts.map((p) => rotateScale(p, shapeRotationBase, shapeRadius, shapeCenter))
 
       // Greedy nearest-neighbor assignment so particles travel to whichever
-      // corner of the shape is closest to them, instead of crossing paths.
+      // target point is closest to them, instead of crossing paths.
       const used = new Array(PARTICLE_COUNT).fill(false)
       const assignment = new Array(PARTICLE_COUNT).fill(0)
       for (let i = 0; i < particles.length; i++) {
@@ -267,6 +383,40 @@ export default function NetworkBackground() {
       ctx.shadowBlur = 0
     }
 
+    // A scattering of particles alone doesn't reliably read as a specific
+    // word — so the word itself is drawn as a soft, real glyph render (always
+    // legible), with the particles glowing on top of/around it as sparkle
+    // rather than being the sole thing spelling it out.
+    const drawWordLabel = (opacity: number) => {
+      ctx.save()
+      ctx.font = `800 ${wordFontPx}px "Segoe UI", Arial, sans-serif`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle = `rgba(${shapeColor}, ${0.26 * opacity})`
+      ctx.shadowColor = `rgba(${shapeColor}, ${0.55 * opacity})`
+      ctx.shadowBlur = 22
+      ctx.fillText(wordText, shapeCenter.x, shapeCenter.y)
+      ctx.restore()
+    }
+
+    const drawWordGlow = (opacity: number) => {
+      drawWordLabel(opacity)
+      ctx.fillStyle = `rgba(${shapeColor}, ${0.9 * opacity})`
+      ctx.shadowColor = `rgba(${shapeColor}, ${opacity})`
+      ctx.shadowBlur = 7
+      for (const p of particles) {
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, 2, 0, Math.PI * 2)
+        ctx.fill()
+      }
+      ctx.shadowBlur = 0
+    }
+
+    const drawFormed = (opacity: number) => {
+      if (isWord) drawWordGlow(opacity)
+      else drawShapeOutline(opacity)
+    }
+
     const step = (now: number) => {
       ctx.clearRect(0, 0, width, height)
 
@@ -287,21 +437,21 @@ export default function NetworkBackground() {
           particles[i].x = lerp(convergeFrom[i].x, tgt.x, e)
           particles[i].y = lerp(convergeFrom[i].y, tgt.y, e)
         }
-        // Connecting corner-order edges while particles are still scattered
-        // across the canvas draws a chaotic tangle, not a forming shape — so
-        // the outline only fades in once they're mostly at their targets.
-        // Before that, the ordinary proximity links carry the transition.
+        // Connecting/highlighting points in target order while particles are
+        // still scattered across the canvas draws a chaotic tangle, not a
+        // forming shape — so the reveal only fades in once they're mostly at
+        // their targets. Before that, the ordinary proximity links carry it.
         const revealStart = 0.65
         if (t < revealStart) {
           drawProximityLines()
         } else {
-          drawShapeOutline((t - revealStart) / (1 - revealStart))
+          drawFormed((t - revealStart) / (1 - revealStart))
         }
         if (t >= 1) {
           phase = 'hold'
           phaseStart = now
-          holdDuration = randRange(2200, 3200)
-          rotationSpeed = (Math.random() < 0.5 ? -1 : 1) * randRange(0.12, 0.3)
+          holdDuration = isWord ? randRange(2800, 3800) : randRange(2200, 3200)
+          rotationSpeed = isWord ? 0 : (Math.random() < 0.5 ? -1 : 1) * randRange(0.12, 0.3)
         }
       } else if (phase === 'hold') {
         const angle = shapeRotationBase + ((now - phaseStart) / 1000) * rotationSpeed
@@ -310,7 +460,7 @@ export default function NetworkBackground() {
           particles[i].x = tgt.x
           particles[i].y = tgt.y
         }
-        drawShapeOutline(1)
+        drawFormed(1)
         if (now - phaseStart > holdDuration) {
           releaseFrom = particles.map((p) => ({ x: p.x, y: p.y }))
           releaseBurst = particles.map((p) => {
@@ -331,7 +481,7 @@ export default function NetworkBackground() {
           particles[i].x = lerp(releaseFrom[i].x, releaseBurst[i].x, e)
           particles[i].y = lerp(releaseFrom[i].y, releaseBurst[i].y, e)
         }
-        drawShapeOutline(1 - e)
+        drawFormed(1 - e)
         if (t >= 1) {
           for (let i = 0; i < particles.length; i++) {
             particles[i].vx = releaseBurst[i].dx * SPEED * BURST_SPEED_MULT
