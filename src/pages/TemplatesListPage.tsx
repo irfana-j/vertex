@@ -146,7 +146,7 @@ function TrackTemplatePicker({ trackedSymphonyIds, onCancel, onTracked }: TrackT
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
         <h3 style={{ fontSize: 14.5, fontWeight: 800, marginBottom: 4 }}>Track a Symphony template</h3>
         <button className="btn small" onClick={load} disabled={loading}>
-          {loading ? 'Refreshing…' : '⟳ Refresh'}
+          <span className={`sync-icon${loading ? ' spinning' : ''}`}>⟳</span> {loading ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
       <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 4 }}>
@@ -320,7 +320,7 @@ function TemplateCard({ template: t, groupNames, canSync, activeCycleId, syncing
       {canSync && (
         <div className="tpl-card-foot">
           <button className="btn small primary" disabled={syncingId === t.id} onClick={() => onSync(t.id)}>
-            {syncingId === t.id ? 'Syncing…' : '⟳ Sync'}
+            <span className={`sync-icon${syncingId === t.id ? ' spinning' : ''}`}>⟳</span> {syncingId === t.id ? 'Syncing…' : 'Sync'}
           </button>
         </div>
       )}
@@ -459,7 +459,7 @@ export default function TemplatesListPage() {
           {syncAllFlash && <span style={{ fontSize: 12, color: 'var(--primary-dark)', fontWeight: 600 }}>{syncAllFlash}</span>}
           {canWriteAny && templates.length > 0 && (
             <button className="btn small" onClick={handleSyncAll} disabled={syncingAll}>
-              {syncingAll ? 'Syncing all…' : '⟳ Sync all'}
+              <span className={`sync-icon${syncingAll ? ' spinning' : ''}`}>⟳</span> {syncingAll ? 'Syncing all…' : 'Sync all'}
             </button>
           )}
           {isAdmin && (

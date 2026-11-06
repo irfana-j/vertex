@@ -69,7 +69,7 @@ export default function RaiseTicketButton({ templateId, templateName, runId, nod
               }
             }}
           >
-            ⟳
+            <span className={phase === 'syncing' ? 'spinning' : undefined}>⟳</span>
           </button>
         )}
         {error && <span style={{ fontSize: 11, color: 'var(--critical)' }}>{error}</span>}

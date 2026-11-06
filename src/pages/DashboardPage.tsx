@@ -681,7 +681,7 @@ export default function DashboardPage() {
           </div>
           {canWriteAny && (
             <button className="btn small" onClick={handleSyncAllTickets} disabled={syncingAllTickets}>
-              {syncingAllTickets ? 'Syncing…' : '⟳ Sync all from board'}
+              <span className={`sync-icon${syncingAllTickets ? ' spinning' : ''}`}>⟳</span> {syncingAllTickets ? 'Syncing…' : 'Sync all from board'}
             </button>
           )}
         </div>
@@ -741,7 +741,7 @@ export default function DashboardPage() {
                     {canWriteAny && canSyncFromBoard(t) && (
                       <div style={{ display: 'flex', gap: 6 }}>
                         <button className="icon-btn" title="Sync status from board" disabled={busy} onClick={() => handleSyncTicket(t.templateId, t.id)}>
-                          ⟳
+                          <span className={busy ? 'spinning' : undefined}>⟳</span>
                         </button>
                         <button
                           className={`btn small followup${stale ? ' stale' : ''}`}

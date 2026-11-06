@@ -143,7 +143,7 @@ export default function TemplateBuilderPage() {
               </button>
             )}
             <button className="btn primary" onClick={handleSync} disabled={syncing}>
-              {syncing ? 'Syncing…' : '⟳ Sync job results'}
+              <span className={`sync-icon${syncing ? ' spinning' : ''}`}>⟳</span> {syncing ? 'Syncing…' : 'Sync job results'}
             </button>
           </div>
         )}
@@ -162,7 +162,7 @@ export default function TemplateBuilderPage() {
         </span>
         {canWrite && (
           <button className="btn small" onClick={handleRefreshStructure} disabled={refreshing}>
-            {refreshing ? 'Refreshing…' : 'Refresh structure'}
+            <span className={`sync-icon${refreshing ? ' spinning' : ''}`}>⟳</span> {refreshing ? 'Refreshing…' : 'Refresh structure'}
           </button>
         )}
       </div>
